@@ -1,0 +1,101 @@
+import { Button, VerticalBox, LineEdit, ComboBox } from "std-widgets.slint";
+
+export component SettingsPage inherits Rectangle {
+    width: 700px;
+    height: 500px;
+    property <string> selected-audio-mode: "Mute";
+    callback back();
+
+    VerticalBox {
+        alignment: LayoutAlignment.start;
+        spacing: 5px;
+
+        HorizontalLayout {
+            spacing: 15px;
+            Button {
+                horizontal-stretch: 0;
+                icon: @image-url("icons/arrow-left.svg");
+                clicked => {
+                    root.back()
+                }
+            }
+
+            Text {
+                horizontal-stretch: 1;
+                text: "Settings Page";
+                font-size: 17px;
+                horizontal-alignment: left;
+                vertical-alignment: center;
+            }
+        }
+
+        VerticalLayout {
+            spacing: 2px;
+            Text {
+                text: "Saved Video Path";
+                font-size: 15px;
+            }
+
+            HorizontalLayout {
+                height: 42px;
+                spacing: 10px;
+                LineEdit {
+                    placeholder-text: "Enter path here";
+                }
+
+                Button {
+                    icon: @image-url("icons/folder-pen.svg");
+                }
+            }
+        }
+
+        VerticalLayout {
+            spacing: 2px;
+            Text {
+                text: "Audio";
+                font-size: 15px;
+            }
+
+            HorizontalLayout {
+                height: 42px;
+                spacing: 10px;
+
+                Button {
+                    text: "Mute";
+                    icon: @image-url("icons/volume-x.svg");
+                    opacity: root.selected-audio-mode == "Mute" ? 1.0 : 0.5;
+                    clicked => {
+                        root.selected-audio-mode = "Mute";
+                    }
+                }
+
+                Button {
+                    text: "Screen";
+                    icon: @image-url("icons/monitor.svg");
+                    opacity: root.selected-audio-mode == "Screen" ? 1.0 : 0.5;
+                    clicked => {
+                        root.selected-audio-mode = "Screen";
+                    }
+                }
+
+                Button {
+                    text: "Mic";
+                    icon: @image-url("icons/mic.svg");
+                    opacity: root.selected-audio-mode == "Mic" ? 1.0 : 0.5;
+                    clicked => {
+                        root.selected-audio-mode = "Mic";
+                    }
+                }
+
+                Button {
+                    text: "Both";
+                    icon: @image-url("icons/audio-lines.svg");
+                    opacity: root.selected-audio-mode == "Both" ? 1.0 : 0.5;
+                    clicked => {
+                        root.selected-audio-mode = "Both";
+                    }
+                }
+            }
+        }
+    }
+}
