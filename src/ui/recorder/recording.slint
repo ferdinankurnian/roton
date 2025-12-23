@@ -1,0 +1,37 @@
+import { VerticalBox, Button } from "std-widgets.slint";
+
+export component RecordingPage inherits Rectangle {
+    width: 700px;
+    height: 100px;
+
+    callback stop-recording();
+
+    VerticalBox {
+        alignment: LayoutAlignment.center;
+        spacing: 15px;
+        Text {
+            font-size: 17px;
+            horizontal-alignment: TextHorizontalAlignment.center;
+            overflow: TextOverflow.clip;
+            text: "recording..";
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 0;
+            height: 42px;
+            spacing: 5px;
+            Button {
+                text: "Pause";
+                icon: @image-url("../../../assets/icons/pause.svg");
+            }
+
+            Button {
+                text: "Stop";
+                icon: @image-url("../../../assets/icons/square.svg");
+                clicked => {
+                    root.stop-recording();
+                }
+            }
+        }
+    }
+}

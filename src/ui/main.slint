@@ -1,0 +1,103 @@
+import { Button, VerticalBox } from "std-widgets.slint";
+import { SettingsPage } from "recorder/settings.slint";
+import { ScreenPage } from "recorder/screen.slint";
+import { RecordingPage } from "recorder/recording.slint";
+import { EditorWindow } from "editor/editor.slint";
+
+export { EditorWindow }
+
+export component AppWindow inherits Window {
+    width: 700px;
+    height: (active-page == 0 || active-page == 3) ? 100px : 210px;
+
+    no-frame: true;
+
+    in-out property <int> active-page: 0;
+    in-out property <string> save-path: "~/Videos";
+    in-out property <string> audio-mode: "Mute";
+
+    callback request-close();
+    callback open-editor();
+    callback start-recording(string, string); // mode, geometry
+    callback stop-recording();
+    callback choose-folder();
+    if (active-page == 0): VerticalBox {
+        alignment: LayoutAlignment.space-between;
+
+        Text {
+            font-size: 17px;
+            horizontal-alignment: TextHorizontalAlignment.center;
+            overflow: TextOverflow.clip;
+            text: "roton";
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 0;
+            height: 42px;
+            spacing: 5px;
+            Button {
+                horizontal-stretch: 0;
+                icon: @image-url("../../assets/icons/settings.svg");
+                clicked => {
+                    root.active-page = 1;
+                }
+            }
+
+            Button {
+                horizontal-stretch: 1;
+                text: "Full Screen";
+                icon: @image-url("../../assets/icons/fullscreen.svg");
+                clicked => {
+                    root.active-page = 2;
+                }
+            }
+
+            Button {
+                horizontal-stretch: 1;
+                icon: @image-url("../../assets/icons/video.svg");
+                text: "Record";
+                clicked => {
+                    root.active-page = 3;
+                    root.start-recording("fullscreen", "");
+                }
+            }
+
+            Button {
+                horizontal-stretch: 0;
+                icon: @image-url("../../assets/icons/x.svg");
+                clicked => {
+                    root.request-close();
+                }
+            }
+        }
+    }
+
+    if (active-page == 1): SettingsPage {
+        save-path <=> root.save-path;
+        selected-audio-mode <=> root.audio-mode;
+        back => {
+            root.active-page = 0;
+        }
+        choose-folder => {
+            root.choose-folder();
+        }
+    }
+
+    if (active-page == 2): ScreenPage {
+        back => {
+            root.active-page = 0;
+        }
+        start(mode) => {
+            root.active-page = 3;
+            // TODO: handle selection mode geometry
+            root.start-recording(mode, "");
+        }
+    }
+
+    if (active-page == 3): RecordingPage {
+        stop-recording => {
+            root.stop-recording();
+            root.open-editor();
+        }
+    }
+}

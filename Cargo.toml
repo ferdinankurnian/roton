@@ -9,6 +9,9 @@ edition = "2021"
 display-info = "0.5.7"
 dotenv = "0.15.0"
 slint = "1.14.1"
+rfd = { version = "0.15", features = ["xdg-portal"] }
+chrono = "0.4"
+directories = "5.0"
 
 [build-dependencies]
 slint-build = "1.14.1"

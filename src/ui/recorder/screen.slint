@@ -1,0 +1,69 @@
+import { Button, VerticalBox, LineEdit, ComboBox } from "std-widgets.slint";
+
+export component ScreenPage inherits Rectangle {
+    width: 700px;
+    height: 210px;
+    property <string> selected-audio-mode: "Mute";
+    callback back();
+    callback start(string); // mode (fullscreen/selection)
+
+    VerticalBox {
+        alignment: LayoutAlignment.start;
+        spacing: 15px;
+
+        HorizontalLayout {
+            spacing: 15px;
+            Button {
+                horizontal-stretch: 0;
+                icon: @image-url("../../../assets/icons/arrow-left.svg");
+                clicked => {
+                    root.back()
+                }
+            }
+
+            Text {
+                horizontal-stretch: 1;
+                text: "Screen Selection";
+                font-size: 17px;
+                horizontal-alignment: left;
+                vertical-alignment: center;
+            }
+        }
+
+        HorizontalLayout {
+            height: 190px;
+            spacing: 10px;
+            VerticalLayout {
+                spacing: 5px;
+                Button {
+                    icon: @image-url("../../../assets/icons/fullscreen.svg");
+                    icon-size: 64px;
+                    clicked => {
+                        root.start("fullscreen");
+                    }
+                }
+
+                Text {
+                    text: "Fullscreen";
+                    horizontal-alignment: center;
+                }
+            }
+
+            VerticalLayout {
+                spacing: 5px;
+                Button {
+                    icon: @image-url("../../../assets/icons/square-dashed-mouse-pointer.svg");
+                    icon-size: 64px;
+                    clicked => {
+                        root.start("selection");
+                    }
+                }
+
+                Text {
+                    text: "Selection";
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+}

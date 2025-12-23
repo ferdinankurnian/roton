@@ -2,19 +2,21 @@ import { Button, VerticalBox, LineEdit, ComboBox } from "std-widgets.slint";
 
 export component SettingsPage inherits Rectangle {
     width: 700px;
-    height: 500px;
-    property <string> selected-audio-mode: "Mute";
+    height: 210px;
+    in-out property <string> selected-audio-mode: "Mute";
+    in-out property <string> save-path: "~/Videos";
     callback back();
+    callback choose-folder();
 
     VerticalBox {
         alignment: LayoutAlignment.start;
-        spacing: 5px;
+        spacing: 15px;
 
         HorizontalLayout {
             spacing: 15px;
             Button {
                 horizontal-stretch: 0;
-                icon: @image-url("icons/arrow-left.svg");
+                icon: @image-url("../../../assets/icons/arrow-left.svg");
                 clicked => {
                     root.back()
                 }
@@ -39,12 +41,18 @@ export component SettingsPage inherits Rectangle {
             HorizontalLayout {
                 height: 42px;
                 spacing: 10px;
+
                 LineEdit {
                     placeholder-text: "Enter path here";
+                    read-only: true;
+                    text: root.save-path;
                 }
 
                 Button {
-                    icon: @image-url("icons/folder-pen.svg");
+                    icon: @image-url("../../../assets/icons/folder-pen.svg");
+                    clicked => {
+                        root.choose-folder();
+                    }
                 }
             }
         }
@@ -62,7 +70,7 @@ export component SettingsPage inherits Rectangle {
 
                 Button {
                     text: "Mute";
-                    icon: @image-url("icons/volume-x.svg");
+                    icon: @image-url("../../../assets/icons/volume-x.svg");
                     opacity: root.selected-audio-mode == "Mute" ? 1.0 : 0.5;
                     clicked => {
                         root.selected-audio-mode = "Mute";
@@ -71,7 +79,7 @@ export component SettingsPage inherits Rectangle {
 
                 Button {
                     text: "Screen";
-                    icon: @image-url("icons/monitor.svg");
+                    icon: @image-url("../../../assets/icons/monitor.svg");
                     opacity: root.selected-audio-mode == "Screen" ? 1.0 : 0.5;
                     clicked => {
                         root.selected-audio-mode = "Screen";
@@ -80,7 +88,7 @@ export component SettingsPage inherits Rectangle {
 
                 Button {
                     text: "Mic";
-                    icon: @image-url("icons/mic.svg");
+                    icon: @image-url("../../../assets/icons/mic.svg");
                     opacity: root.selected-audio-mode == "Mic" ? 1.0 : 0.5;
                     clicked => {
                         root.selected-audio-mode = "Mic";
@@ -89,7 +97,7 @@ export component SettingsPage inherits Rectangle {
 
                 Button {
                     text: "Both";
-                    icon: @image-url("icons/audio-lines.svg");
+                    icon: @image-url("../../../assets/icons/audio-lines.svg");
                     opacity: root.selected-audio-mode == "Both" ? 1.0 : 0.5;
                     clicked => {
                         root.selected-audio-mode = "Both";
