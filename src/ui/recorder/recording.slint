@@ -4,7 +4,9 @@ export component RecordingPage inherits Rectangle {
     width: 700px;
     height: 100px;
 
+    in-out property <bool> is-paused: false;
     callback stop-recording();
+    callback toggle-pause();
 
     VerticalBox {
         alignment: LayoutAlignment.center;
@@ -13,7 +15,7 @@ export component RecordingPage inherits Rectangle {
             font-size: 17px;
             horizontal-alignment: TextHorizontalAlignment.center;
             overflow: TextOverflow.clip;
-            text: "recording..";
+            text: root.is-paused ? "Paused" : "Recording...";
         }
 
         HorizontalLayout {
@@ -21,9 +23,11 @@ export component RecordingPage inherits Rectangle {
             height: 42px;
             spacing: 5px;
             Button {
-                text: "Pause";
-                enabled: false; // wl-screenrec doesn't support pause
-                icon: @image-url("../../../assets/icons/pause.svg");
+                text: root.is-paused ? "Resume" : "Pause";
+                icon: root.is-paused ? @image-url("../../../assets/icons/play.svg") : @image-url("../../../assets/icons/pause.svg");
+                clicked => {
+                    root.toggle-pause();
+                }
             }
 
             Button {

@@ -174,8 +174,36 @@ fn main() -> Result<(), Box<dyn Error>> {
                 current_settings.audio_mode = audio_mode.clone();
                 let _ = current_settings.save();
 
-                if let Err(e) = rec.start_recording(&path_str, geo, &audio_mode, mic_arg.as_deref(), monitor_arg.as_deref()) {
+                if let Err(e) = rec.start_session(&path_str, geo, &audio_mode, mic_arg.as_deref(), monitor_arg.as_deref()) {
                     eprintln!("Error starting recording: {}", e);
+                }
+            }
+        }
+    });
+
+    app.on_toggle_pause({
+        let recorder = recorder.clone();
+        let app_weak = app.as_weak();
+        move || {
+            if let Some(app) = app_weak.upgrade() {
+                let is_paused = app.get_is_paused(); 
+                
+                if let Ok(mut rec) = recorder.lock() {
+                    if !is_paused {
+                        // Pause
+                        if let Err(e) = rec.pause_session() {
+                            eprintln!("Error pausing: {}", e);
+                        } else {
+                            app.set_is_paused(true);
+                        }
+                    } else {
+                        // Resume
+                        if let Err(e) = rec.resume_session() {
+                             eprintln!("Error resuming: {}", e);
+                        } else {
+                            app.set_is_paused(false);
+                        }
+                    }
                 }
             }
         }
@@ -186,9 +214,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         let app_weak = app.as_weak();
         let last_path = last_path.clone();
         move || {
+            if let Some(app) = app_weak.upgrade() {
+                app.set_is_paused(false);
+            }
+
             if let Ok(mut rec) = recorder.lock() {
-                if let Err(e) = rec.stop_recording() {
-                    eprintln!("Error stopping recording: {}", e);
+                if let Err(e) = rec.finish_session() {
+                    eprintln!("Error finishing recording: {}", e);
                 } else {
                     // Recording stopped successfully, generate thumbnail
                     let path_opt = last_path.lock().unwrap().clone();
