@@ -1,3 +1,6 @@
+<img src="assets/rotonicon.png" width="100" height="100" alt="Roton Icon">
+
+
 # Roton Screen Recorder
 
 Roton is a `wl-screenrec` wrapper, it's a screen recorder app and use `rust` language.
@@ -25,3 +28,7 @@ So I make this app. This app can record either fullscreen or select area. You ca
     ```
     cargo run
     ```
+
+## Note
+
+Btw, this app use dependencies like `slurp`, `ffmpeg`, and `wl-screenrec`. 

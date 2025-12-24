@@ -2,17 +2,21 @@ use std::process::{Child, Command, Stdio};
 
 pub struct Recorder {
     process: Option<Child>,
+    pulse_modules: Vec<String>, // Stores IDs of loaded PulseAudio modules
 }
 
 impl Recorder {
     pub fn new() -> Self {
-        Self { process: None }
+        Self { 
+            process: None,
+            pulse_modules: Vec::new(),
+        }
     }
 
-    /// Checks if `wl-screenrec` is available in the PATH
-    pub fn is_available() -> bool {
-        Command::new("wl-screenrec")
-            .arg("--help")
+    /// Checks if a command is available in the PATH
+    pub fn is_installed(cmd: &str) -> bool {
+        Command::new("which")
+            .arg(cmd)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -20,7 +24,38 @@ impl Recorder {
             .unwrap_or(false)
     }
 
-    pub fn start_recording(&mut self, output_path: &str, geometry: Option<&str>, audio_mode: &str) -> Result<(), String> {
+    pub fn is_available() -> bool {
+        Self::is_installed("wl-screenrec")
+    }
+
+    fn load_pulse_module(&mut self, args: &[&str]) -> Option<String> {
+        let output = Command::new("pactl")
+            .arg("load-module")
+            .args(args)
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            self.pulse_modules.push(id.clone());
+            Some(id)
+        } else {
+            eprintln!("Failed to load pulse module: {:?}", args);
+            None
+        }
+    }
+
+    fn unload_pulse_modules(&mut self) {
+        for id in &self.pulse_modules {
+            let _ = Command::new("pactl")
+                .arg("unload-module")
+                .arg(id)
+                .status();
+        }
+        self.pulse_modules.clear();
+    }
+
+    pub fn start_recording(&mut self, output_path: &str, geometry: Option<&str>, audio_mode: &str, mic_device: Option<&str>, monitor_device: Option<&str>) -> Result<(), String> {
         if self.process.is_some() {
             return Err("Recording already in progress".to_string());
         }
@@ -33,17 +68,45 @@ impl Recorder {
         }
 
         match audio_mode {
-            "Screen" | "Mic" | "Both" => {
+            "Screen" => {
                 cmd.arg("--audio");
-                if audio_mode == "Mic" {
-                    // This is a simplification; usually you want to specify device for mic
-                    // wl-screenrec defaults to default capture device (usually mic)
+                if let Some(dev) = monitor_device {
+                    cmd.arg("--audio-device").arg(dev);
                 }
-                // wl-screenrec doesn't natively distinguish between 'screen audio' and 'mic' easily 
-                // without specific pulseaudio/pipewire source names.
-                // For now, --audio will enable the default capture device.
             }
-            _ => {} // Mute
+            "Mic" => {
+                cmd.arg("--audio");
+                if let Some(dev) = mic_device {
+                    cmd.arg("--audio-device").arg(dev);
+                }
+            }
+            "Both" => {
+                if let (Some(mic), Some(monitor)) = (mic_device, monitor_device) {
+                    println!("Setting up audio mixing for devices: {} + {}", mic, monitor);
+                    
+                    // 1. Create a Null Sink (Virtual Mixer)
+                    // sink_name=RotonMixer sink_properties=device.description=RotonMixer
+                    if let Some(_) = self.load_pulse_module(&["module-null-sink", "sink_name=RotonMixer", "sink_properties=device.description=RotonMixer"]) {
+                        
+                        // 2. Loopback Mic -> RotonMixer
+                        self.load_pulse_module(&["module-loopback", "sink=RotonMixer", &format!("source={}", mic), "latency_msec=1"]);
+                        
+                        // 3. Loopback Monitor -> RotonMixer
+                        self.load_pulse_module(&["module-loopback", "sink=RotonMixer", &format!("source={}", monitor), "latency_msec=1"]);
+                        
+                        // 4. Record the monitor of RotonMixer
+                        cmd.arg("--audio");
+                        cmd.arg("--audio-device").arg("RotonMixer.monitor");
+                    } else {
+                        return Err("Failed to setup audio mixing (could not create null sink)".to_string());
+                    }
+                } else {
+                    return Err("Both mode requires both Mic and Monitor devices to be selected".to_string());
+                }
+            }
+            _ => {
+                // Mute - don't pass --audio flag
+            }
         }
 
         // Don't clutter roton's stdout/stderr
@@ -52,15 +115,22 @@ impl Recorder {
         
         match cmd.spawn() {
             Ok(child) => {
-                println!("Recording started: {} (geometry: {:?})", output_path, geometry);
+                println!("Recording started: {} (geometry: {:?}, audio: {})", output_path, geometry, audio_mode);
                 self.process = Some(child);
                 Ok(())
             }
-            Err(e) => Err(format!("Failed to start recorder: {}", e)),
+            Err(e) => {
+                // If spawn fails, cleanup any modules we might have loaded
+                self.unload_pulse_modules();
+                Err(format!("Failed to start recorder: {}", e))
+            },
         }
     }
 
     pub fn stop_recording(&mut self) -> Result<(), String> {
+        // Cleanup modules regardless of how the process stops
+        defer_cleanup(self);
+
         if let Some(mut child) = self.process.take() {
             println!("Stopping recording...");
             
@@ -90,4 +160,9 @@ impl Recorder {
             Err("No recording in progress".to_string())
         }
     }
+}
+
+// Helper to cleanup modules if called directly or on drop
+fn defer_cleanup(recorder: &mut Recorder) {
+    recorder.unload_pulse_modules();
 }

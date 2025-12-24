@@ -6,7 +6,7 @@ import { RecordingFinishedPage } from "recorder/finished.slint";
 
 export component AppWindow inherits Window {
     width: 700px;
-    height: (active-page == 0 || active-page == 3) ? 100px : (active-page == 4 ? 500px : 210px);
+    height: (active-page == 0 || active-page == 3) ? 100px : (active-page == 4 ? 500px : (active-page == 1 ? (audio-mode == "Mute" ? 220px : 370px) : 210px));
 
     no-frame: true;
 
@@ -18,6 +18,15 @@ export component AppWindow inherits Window {
     in-out property <string> recording-mode: "fullscreen";
     in-out property <string> recording-geometry: "";
 
+    in-out property <bool> has-slurp: true;
+    in-out property <bool> has-ffmpeg: true;
+
+    // Audio Device Properties
+    in-out property <[string]> available-monitors: ["Default Monitor"];
+    in-out property <[string]> available-mics: ["Default Mic"];
+    in-out property <string> selected-monitor;
+    in-out property <string> selected-mic;
+
     callback request-close();
     callback start-recording(string, string); // mode, geometry
     callback stop-recording();
@@ -25,6 +34,7 @@ export component AppWindow inherits Window {
     callback audio-mode-changed(string);
     callback open-folder();
     callback select-area();
+    callback refresh-devices();
 
     if (active-page == 0): VerticalBox {
         alignment: LayoutAlignment.space-between;
@@ -90,6 +100,10 @@ export component AppWindow inherits Window {
     if (active-page == 1): SettingsPage {
         save-path <=> root.save-path;
         selected-audio-mode <=> root.audio-mode;
+        available-monitors: root.available-monitors;
+        available-mics: root.available-mics;
+        selected-monitor <=> root.selected-monitor;
+        selected-mic <=> root.selected-mic;
         back => {
             root.active-page = 0;
         }
@@ -99,9 +113,13 @@ export component AppWindow inherits Window {
         audio-mode-changed(mode) => {
             root.audio-mode-changed(mode);
         }
+        refresh-devices => {
+            root.refresh-devices();
+        }
     }
 
     if (active-page == 2): ScreenPage {
+        has-slurp: root.has-slurp;
         back => {
             root.active-page = 0;
         }
@@ -124,6 +142,7 @@ export component AppWindow inherits Window {
 
     if (active-page == 4): RecordingFinishedPage {
         thumbnail <=> root.last-thumbnail;
+        has-ffmpeg: root.has-ffmpeg;
         // Balik ke home
         back => {
             root.active-page = 0;

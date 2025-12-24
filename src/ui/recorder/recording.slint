@@ -22,6 +22,7 @@ export component RecordingPage inherits Rectangle {
             spacing: 5px;
             Button {
                 text: "Pause";
+                enabled: false; // wl-screenrec doesn't support pause
                 icon: @image-url("../../../assets/icons/pause.svg");
             }
 

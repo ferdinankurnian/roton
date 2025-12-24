@@ -4,9 +4,12 @@ use std::sync::{Arc, Mutex};
 
 mod recorder;
 mod config;
+mod audio;
 
 use recorder::Recorder;
 use config::Settings;
+use audio::AudioDevice;
+use slint::Model;
 
 slint::include_modules!();
 
@@ -14,6 +17,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let app = AppWindow::new()?;
     let last_path = Arc::new(Mutex::new(None));
+    
+    // Store audio devices to map friendly names back to internal names
+    let audio_devices = Arc::new(Mutex::new(Vec::<AudioDevice>::new()));
 
     app.on_request_close({
         let app_weak = app.as_weak();
@@ -30,6 +36,58 @@ fn main() -> Result<(), Box<dyn Error>> {
     let settings = Settings::load();
     app.set_save_path(settings.save_path.into());
     app.set_audio_mode(settings.audio_mode.into());
+
+    // Check dependencies
+    let has_slurp = Recorder::is_installed("slurp");
+    let has_ffmpeg = Recorder::is_installed("ffmpeg");
+    app.set_has_slurp(has_slurp);
+    app.set_has_ffmpeg(has_ffmpeg);
+    
+    // Refresh audio devices logic
+    let refresh_audio = {
+        let app_weak = app.as_weak();
+        let audio_devices = audio_devices.clone();
+        move || {
+            let devices = audio::get_audio_devices();
+            let mut monitors = Vec::new();
+            let mut mics = Vec::new();
+            
+            // Populate lists
+            for dev in &devices {
+                if dev.is_monitor {
+                    monitors.push(slint::SharedString::from(&dev.description));
+                } else {
+                    mics.push(slint::SharedString::from(&dev.description));
+                }
+            }
+            
+            // Update UI
+            if let Some(app) = app_weak.upgrade() {
+                let monitors_model = std::rc::Rc::new(slint::VecModel::from(monitors));
+                let mics_model = std::rc::Rc::new(slint::VecModel::from(mics));
+                app.set_available_monitors(monitors_model.clone().into());
+                app.set_available_mics(mics_model.clone().into());
+                
+                // Select first if not set (optional logic, Slint might handle empty selection)
+                if app.get_selected_monitor() == "" && monitors_model.row_count() > 0 {
+                    app.set_selected_monitor(monitors_model.row_data(0).unwrap());
+                }
+                if app.get_selected_mic() == "" && mics_model.row_count() > 0 {
+                    app.set_selected_mic(mics_model.row_data(0).unwrap());
+                }
+            }
+            
+            // Store for lookup
+            if let Ok(mut store) = audio_devices.lock() {
+                *store = devices;
+            }
+        }
+    };
+    
+    // Initial refresh
+    refresh_audio();
+    
+    app.on_refresh_devices(refresh_audio.clone());
 
     app.on_choose_folder({
         let app_weak = app.as_weak();
@@ -71,13 +129,32 @@ fn main() -> Result<(), Box<dyn Error>> {
         let recorder = recorder.clone();
         let app_weak = app.as_weak();
         let last_path = last_path.clone();
+        let audio_devices = audio_devices.clone();
+        
         move |mode, geometry| {
             let app = app_weak.upgrade().unwrap();
             let save_dir = app.get_save_path().to_string();
             let audio_mode = app.get_audio_mode().to_string();
+            
+            // Get selected devices
+            let selected_monitor = app.get_selected_monitor().to_string();
+            let selected_mic = app.get_selected_mic().to_string();
+            
+            // Resolve to internal names
+            let mut mic_arg = None;
+            let mut monitor_arg = None;
+            
+            if let Ok(devices) = audio_devices.lock() {
+                 if let Some(dev) = devices.iter().find(|d| d.description == selected_mic) {
+                     mic_arg = Some(dev.name.clone());
+                 }
+                 if let Some(dev) = devices.iter().find(|d| d.description == selected_monitor) {
+                     monitor_arg = Some(dev.name.clone());
+                 }
+            }
 
-            println!("Starting recording: mode={}, geometry={}, path={}, audio={}", 
-                mode, geometry, save_dir, audio_mode);
+            println!("Starting recording: mode={}, geometry={}, path={}, audio={}, mic={:?}, monitor={:?}", 
+                mode, geometry, save_dir, audio_mode, mic_arg, monitor_arg);
             
             let filename = format!("recording_{}.mp4", chrono::Local::now().format("%Y-%m-%d_%H-%M-%S"));
             let path = std::path::Path::new(&save_dir).join(filename);
@@ -97,7 +174,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 current_settings.audio_mode = audio_mode.clone();
                 let _ = current_settings.save();
 
-                if let Err(e) = rec.start_recording(&path_str, geo, &audio_mode) {
+                if let Err(e) = rec.start_recording(&path_str, geo, &audio_mode, mic_arg.as_deref(), monitor_arg.as_deref()) {
                     eprintln!("Error starting recording: {}", e);
                 }
             }

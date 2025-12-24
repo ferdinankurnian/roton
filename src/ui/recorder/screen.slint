@@ -3,6 +3,7 @@ import { Button, VerticalBox, LineEdit, ComboBox } from "std-widgets.slint";
 export component ScreenPage inherits Rectangle {
     width: 700px;
     height: 210px;
+    in property <bool> has-slurp: true;
     property <string> selected-audio-mode: "Mute";
     callback back();
     callback set-fullscreen();
@@ -46,6 +47,7 @@ export component ScreenPage inherits Rectangle {
 
                 Text {
                     text: "Fullscreen";
+                    color: #e0e0e0;
                     horizontal-alignment: center;
                 }
             }
@@ -53,6 +55,7 @@ export component ScreenPage inherits Rectangle {
             VerticalLayout {
                 spacing: 5px;
                 Button {
+                    enabled: root.has-slurp;
                     icon: @image-url("../../../assets/icons/square-dashed-mouse-pointer.svg");
                     icon-size: 64px;
                     clicked => {
@@ -62,6 +65,7 @@ export component ScreenPage inherits Rectangle {
 
                 Text {
                     text: "Select Area";
+                    color: root.has-slurp ? #e0e0e0 : #ffffff60;
                     horizontal-alignment: center;
                 }
             }

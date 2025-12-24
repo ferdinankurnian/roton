@@ -5,6 +5,7 @@ export component RecordingFinishedPage inherits Rectangle {
     height: 500px;
 
     in-out property <image> thumbnail;
+    in property <bool> has-ffmpeg: true;
 
     callback back();
     callback open-folder();
@@ -27,10 +28,19 @@ export component RecordingFinishedPage inherits Rectangle {
             clip: true;
 
             Image {
+                visible: root.has-ffmpeg;
                 width: 100%;
                 height: 100%;
                 source: root.thumbnail;
                 image-fit: contain;
+            }
+
+            Text {
+                visible: !root.has-ffmpeg;
+                text: "Can't show thumbnail";
+                color: #ff4444;
+                horizontal-alignment: center;
+                vertical-alignment: center;
             }
         }
 

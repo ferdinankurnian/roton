@@ -2,12 +2,17 @@ import { Button, VerticalBox, LineEdit, ComboBox } from "std-widgets.slint";
 
 export component SettingsPage inherits Rectangle {
     width: 700px;
-    height: 210px;
+    height: root.selected-audio-mode == "Mute" ? 220px : 370px;
     in-out property <string> selected-audio-mode: "Mute";
     in-out property <string> save-path: "~/Videos";
+    in-out property <[string]> available-monitors: ["Default Monitor"];
+    in-out property <[string]> available-mics: ["Default Mic"];
+    in-out property <string> selected-monitor;
+    in-out property <string> selected-mic;
     callback back();
     callback choose-folder();
     callback audio-mode-changed(string);
+    callback refresh-devices(); // Callback to ask backend to refresh device list
 
     VerticalBox {
         alignment: LayoutAlignment.start;
@@ -33,7 +38,7 @@ export component SettingsPage inherits Rectangle {
         }
 
         VerticalLayout {
-            spacing: 2px;
+            spacing: 5px;
             Text {
                 text: "Saved Video Path";
                 font-size: 15px;
@@ -59,7 +64,7 @@ export component SettingsPage inherits Rectangle {
         }
 
         VerticalLayout {
-            spacing: 2px;
+            spacing: 5px;
             Text {
                 text: "Audio";
                 font-size: 15px;
@@ -107,6 +112,40 @@ export component SettingsPage inherits Rectangle {
                         root.selected-audio-mode = "Both";
                         root.audio-mode-changed("Both");
                     }
+                }
+            }
+        }
+
+        VerticalLayout {
+            visible: root.selected-audio-mode != "Mute";
+            spacing: 5px;
+            Text {
+                text: "Monitor";
+                font-size: 15px;
+            }
+
+            ComboBox {
+                model: root.available-monitors;
+                current-value: root.selected-monitor;
+                selected => {
+                    root.selected-monitor = self.current-value;
+                }
+            }
+        }
+
+        VerticalLayout {
+            visible: root.selected-audio-mode != "Mute";
+            spacing: 5px;
+            Text {
+                text: "Input Mic";
+                font-size: 15px;
+            }
+
+            ComboBox {
+                model: root.available-mics;
+                current-value: root.selected-mic;
+                selected => {
+                    root.selected-mic = self.current-value;
                 }
             }
         }
