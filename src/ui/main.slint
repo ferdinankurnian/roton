@@ -2,33 +2,48 @@ import { Button, VerticalBox } from "std-widgets.slint";
 import { SettingsPage } from "recorder/settings.slint";
 import { ScreenPage } from "recorder/screen.slint";
 import { RecordingPage } from "recorder/recording.slint";
-import { EditorWindow } from "editor/editor.slint";
-
-export { EditorWindow }
+import { RecordingFinishedPage } from "recorder/finished.slint";
 
 export component AppWindow inherits Window {
     width: 700px;
-    height: (active-page == 0 || active-page == 3) ? 100px : 210px;
+    height: (active-page == 0 || active-page == 3) ? 100px : (active-page == 4 ? 500px : 210px);
 
     no-frame: true;
 
     in-out property <int> active-page: 0;
     in-out property <string> save-path: "~/Videos";
     in-out property <string> audio-mode: "Mute";
+    in-out property <image> last-thumbnail;
+
+    in-out property <string> recording-mode: "fullscreen";
+    in-out property <string> recording-geometry: "";
 
     callback request-close();
-    callback open-editor();
     callback start-recording(string, string); // mode, geometry
     callback stop-recording();
     callback choose-folder();
+    callback audio-mode-changed(string);
+    callback open-folder();
+    callback select-area();
+
     if (active-page == 0): VerticalBox {
         alignment: LayoutAlignment.space-between;
 
-        Text {
-            font-size: 17px;
-            horizontal-alignment: TextHorizontalAlignment.center;
-            overflow: TextOverflow.clip;
-            text: "roton";
+        HorizontalLayout {
+            spacing: 5px;
+            Image {
+                source: @image-url("../../assets/rotonicon.png");
+                width: 25px;
+                height: 25px;
+            }
+
+            Text {
+                font-size: 17px;
+                horizontal-alignment: TextHorizontalAlignment.left;
+                vertical-alignment: TextVerticalAlignment.center;
+                overflow: TextOverflow.clip;
+                text: "Roton Screen Recorder";
+            }
         }
 
         HorizontalLayout {
@@ -45,8 +60,8 @@ export component AppWindow inherits Window {
 
             Button {
                 horizontal-stretch: 1;
-                text: "Full Screen";
-                icon: @image-url("../../assets/icons/fullscreen.svg");
+                text: root.recording-mode == "fullscreen" ? "Full Screen" : "Selected Area";
+                icon: root.recording-mode == "fullscreen" ? @image-url("../../assets/icons/fullscreen.svg") : @image-url("../../assets/icons/square-dashed-mouse-pointer.svg");
                 clicked => {
                     root.active-page = 2;
                 }
@@ -58,7 +73,7 @@ export component AppWindow inherits Window {
                 text: "Record";
                 clicked => {
                     root.active-page = 3;
-                    root.start-recording("fullscreen", "");
+                    root.start-recording(root.recording-mode, root.recording-geometry);
                 }
             }
 
@@ -81,23 +96,40 @@ export component AppWindow inherits Window {
         choose-folder => {
             root.choose-folder();
         }
+        audio-mode-changed(mode) => {
+            root.audio-mode-changed(mode);
+        }
     }
 
     if (active-page == 2): ScreenPage {
         back => {
             root.active-page = 0;
         }
-        start(mode) => {
-            root.active-page = 3;
-            // TODO: handle selection mode geometry
-            root.start-recording(mode, "");
+        set-fullscreen => {
+            root.recording-mode = "fullscreen";
+            root.recording-geometry = "";
+            root.active-page = 0;
+        }
+        select-area => {
+            root.select-area();
         }
     }
 
     if (active-page == 3): RecordingPage {
         stop-recording => {
             root.stop-recording();
-            root.open-editor();
+            root.active-page = 4;
+        }
+    }
+
+    if (active-page == 4): RecordingFinishedPage {
+        thumbnail <=> root.last-thumbnail;
+        // Balik ke home
+        back => {
+            root.active-page = 0;
+        }
+        open-folder => {
+            root.open-folder();
         }
     }
 }

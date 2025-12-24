@@ -5,7 +5,8 @@ export component ScreenPage inherits Rectangle {
     height: 210px;
     property <string> selected-audio-mode: "Mute";
     callback back();
-    callback start(string); // mode (fullscreen/selection)
+    callback set-fullscreen();
+    callback select-area();
 
     VerticalBox {
         alignment: LayoutAlignment.start;
@@ -39,7 +40,7 @@ export component ScreenPage inherits Rectangle {
                     icon: @image-url("../../../assets/icons/fullscreen.svg");
                     icon-size: 64px;
                     clicked => {
-                        root.start("fullscreen");
+                        root.set-fullscreen();
                     }
                 }
 
@@ -55,12 +56,12 @@ export component ScreenPage inherits Rectangle {
                     icon: @image-url("../../../assets/icons/square-dashed-mouse-pointer.svg");
                     icon-size: 64px;
                     clicked => {
-                        root.start("selection");
+                        root.select-area();
                     }
                 }
 
                 Text {
-                    text: "Selection";
+                    text: "Select Area";
                     horizontal-alignment: center;
                 }
             }

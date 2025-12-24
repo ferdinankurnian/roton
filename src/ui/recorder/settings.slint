@@ -7,6 +7,7 @@ export component SettingsPage inherits Rectangle {
     in-out property <string> save-path: "~/Videos";
     callback back();
     callback choose-folder();
+    callback audio-mode-changed(string);
 
     VerticalBox {
         alignment: LayoutAlignment.start;
@@ -74,6 +75,7 @@ export component SettingsPage inherits Rectangle {
                     opacity: root.selected-audio-mode == "Mute" ? 1.0 : 0.5;
                     clicked => {
                         root.selected-audio-mode = "Mute";
+                        root.audio-mode-changed("Mute");
                     }
                 }
 
@@ -83,6 +85,7 @@ export component SettingsPage inherits Rectangle {
                     opacity: root.selected-audio-mode == "Screen" ? 1.0 : 0.5;
                     clicked => {
                         root.selected-audio-mode = "Screen";
+                        root.audio-mode-changed("Screen");
                     }
                 }
 
@@ -92,6 +95,7 @@ export component SettingsPage inherits Rectangle {
                     opacity: root.selected-audio-mode == "Mic" ? 1.0 : 0.5;
                     clicked => {
                         root.selected-audio-mode = "Mic";
+                        root.audio-mode-changed("Mic");
                     }
                 }
 
@@ -101,6 +105,7 @@ export component SettingsPage inherits Rectangle {
                     opacity: root.selected-audio-mode == "Both" ? 1.0 : 0.5;
                     clicked => {
                         root.selected-audio-mode = "Both";
+                        root.audio-mode-changed("Both");
                     }
                 }
             }

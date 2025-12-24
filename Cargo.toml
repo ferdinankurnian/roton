@@ -12,6 +12,8 @@ slint = "1.14.1"
 rfd = { version = "0.15", features = ["xdg-portal"] }
 chrono = "0.4"
 directories = "5.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.147"
 
 [build-dependencies]
 slint-build = "1.14.1"
