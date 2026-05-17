@@ -187,6 +187,7 @@ struct Roton {
     is_paused: bool,
     pause_blink_on: bool,
     elapsed: u64,
+    current_recording_path: Option<PathBuf>,
     has_wl_screenrec: bool,
     has_slurp: bool,
     has_ffmpeg: bool,
@@ -235,6 +236,7 @@ impl Roton {
             is_paused: false,
             pause_blink_on: true,
             elapsed: 0,
+            current_recording_path: None,
             has_wl_screenrec: Recorder::is_installed("wl-screenrec"),
             has_slurp: Recorder::is_installed("slurp"),
             has_ffmpeg: Recorder::is_installed("ffmpeg"),
@@ -606,6 +608,7 @@ impl Roton {
         self.is_paused = false;
         self.pause_blink_on = true;
         self.elapsed = 0;
+        self.current_recording_path = Some(output_path);
         self.is_format_dropdown_open = false;
         self.is_monitor_dropdown_open = false;
         self.is_mic_dropdown_open = false;
@@ -621,9 +624,10 @@ impl Roton {
             .lock()
             .map_err(|_| "Recorder lock poisoned".to_string())?
             .finish_session()?;
+        let video_path = self.current_recording_path.take();
         self.is_recording = false;
         self.is_paused = false;
-        notify_recording_completed(self.settings.save_path.clone());
+        notify_recording_completed(self.settings.save_path.clone(), video_path);
         Ok(())
     }
 
@@ -2086,14 +2090,25 @@ fn pill_hovered(_: &Theme) -> container::Style {
     }
 }
 
-fn notify_recording_completed(save_path: String) {
+fn notify_recording_completed(save_path: String, video_path: Option<PathBuf>) {
     thread::spawn(move || {
-        let notification = Notification::new()
+        let thumbnail_path = video_path
+            .as_deref()
+            .and_then(create_video_thumbnail)
+            .map(|path| path.to_string_lossy().to_string());
+
+        let mut notification = Notification::new();
+        notification
             .summary("Recording completed!")
             .body("Click to open in file manager")
             .icon("video-x-generic")
-            .action("open", "Open")
-            .show();
+            .action("open", "Open");
+
+        if let Some(path) = thumbnail_path.as_deref() {
+            notification.image_path(path);
+        }
+
+        let notification = notification.show();
 
         if let Ok(handle) = notification {
             handle.wait_for_action(|action| {
@@ -2103,6 +2118,31 @@ fn notify_recording_completed(save_path: String) {
             });
         }
     });
+}
+
+fn create_video_thumbnail(video_path: &Path) -> Option<PathBuf> {
+    let thumbnail_path = std::env::temp_dir().join(format!(
+        "roton_thumbnail_{}.png",
+        chrono::Local::now().format("%Y-%m-%d_%H-%M-%S-%f")
+    ));
+
+    let status = Command::new("ffmpeg")
+        .arg("-y")
+        .arg("-ss")
+        .arg("00:00:01")
+        .arg("-i")
+        .arg(video_path)
+        .arg("-frames:v")
+        .arg("1")
+        .arg("-vf")
+        .arg("scale=320:-1")
+        .arg(&thumbnail_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+
+    status.success().then_some(thumbnail_path)
 }
 
 fn truncate_text(value: &str, max_chars: usize) -> String {
