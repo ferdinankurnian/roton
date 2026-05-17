@@ -118,6 +118,7 @@ enum Message {
     HoverShowCursor(bool),
     HoverScreenSound(bool),
     PauseBlinkTick,
+    RecordingTick,
     Frame,
     CloseModal,
     ToggleFormatDropdown,
@@ -408,6 +409,11 @@ impl Roton {
                     self.pause_blink_on = true;
                 }
             }
+            Message::RecordingTick => {
+                if self.is_recording && !self.is_paused {
+                    self.elapsed += 1;
+                }
+            }
             Message::Frame => {
                 if self.selected_node.is_some() {
                     self.modal_progress = (self.modal_progress + 0.16).min(1.0);
@@ -599,6 +605,7 @@ impl Roton {
         self.is_recording = true;
         self.is_paused = false;
         self.pause_blink_on = true;
+        self.elapsed = 0;
         self.is_format_dropdown_open = false;
         self.is_monitor_dropdown_open = false;
         self.is_mic_dropdown_open = false;
@@ -685,6 +692,12 @@ impl Roton {
         if self.is_paused {
             subscriptions.push(
                 time::every(std::time::Duration::from_millis(420)).map(|_| Message::PauseBlinkTick),
+            );
+        }
+
+        if self.is_recording {
+            subscriptions.push(
+                time::every(std::time::Duration::from_secs(1)).map(|_| Message::RecordingTick),
             );
         }
 
