@@ -9,6 +9,8 @@ struct RecordingConfig {
     mic_device: Option<String>,
     monitor_device: Option<String>,
     final_path: String,
+    output: Option<String>,
+    show_cursor: bool,
 }
 
 pub struct Recorder {
@@ -73,7 +75,13 @@ impl Recorder {
         if let Some(config) = &self.config {
             // Generate temp file path in system temp dir
             let timestamp = chrono::Local::now().format("%H-%M-%S-%f");
-            let temp_file = std::env::temp_dir().join(format!("roton_seg_{}.mp4", timestamp));
+            let extension = PathBuf::from(&config.final_path)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or("mp4")
+                .to_string();
+            let temp_file =
+                std::env::temp_dir().join(format!("roton_seg_{}.{}", timestamp, extension));
             let temp_path_str = temp_file.to_str().unwrap().to_string();
 
             let mut cmd = Command::new("wl-screenrec");
@@ -81,6 +89,12 @@ impl Recorder {
 
             if let Some(geo) = &config.geometry {
                 cmd.arg("-g").arg(geo);
+            } else if let Some(output) = &config.output {
+                cmd.arg("-o").arg(output);
+            }
+
+            if !config.show_cursor {
+                cmd.arg("--no-cursor");
             }
 
             match config.audio_mode.as_str() {
@@ -141,6 +155,8 @@ impl Recorder {
         audio_mode: &str,
         mic: Option<&str>,
         monitor: Option<&str>,
+        output: Option<&str>,
+        show_cursor: bool,
     ) -> Result<(), String> {
         // Clear previous session state
         self.stop_current_process();
@@ -179,6 +195,8 @@ impl Recorder {
             mic_device: mic.map(|s| s.to_string()),
             monitor_device: monitor.map(|s| s.to_string()),
             final_path: final_path.to_string(),
+            output: output.map(|s| s.to_string()),
+            show_cursor,
         });
 
         // Start first segment

@@ -5,16 +5,25 @@ mod recorder;
 use audio::AudioDevice;
 use config::Settings;
 use display_info::DisplayInfo;
-use iced::widget::{Space, column, container, image, mouse_area, row, stack, svg, text};
+use iced::widget::{column, container, image, mouse_area, row, stack, svg, text, Space};
 use iced::{
-    Color, Element, Length, Shadow, Subscription, Task, Theme, alignment, application, border,
-    time, window,
+    alignment, application, border, time, window, Color, Element, Length, Padding, Shadow,
+    Subscription, Task, Theme,
 };
 use notify_rust::Notification;
 use recorder::Recorder;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+
+const NODE_CARD_WIDTH: f32 = 148.0;
+const NODE_CARD_HEIGHT: f32 = 134.0;
+const NODE_ROW_SPACING: f32 = 24.0;
+const NODE_COLUMN_SPACING: f32 = 52.0;
+const GRAPH_WIDTH: f32 = (NODE_CARD_WIDTH * 2.0) + NODE_ROW_SPACING;
+const GRAPH_HEIGHT: f32 = (NODE_CARD_HEIGHT * 2.0) + NODE_COLUMN_SPACING;
 
 fn main() -> iced::Result {
     application("roton", Roton::update, Roton::view)
@@ -86,9 +95,20 @@ enum Message {
     TogglePause,
     DragWindow,
     CloseWindow,
+    MaximizeWindow,
+    SetWindowMaximized(bool),
+    MinimizeWindow,
+    RestoreWindow,
+    TrayTick,
+    ToggleTitlebarMenu,
+    HoverTitlebarMenuItem(Option<usize>),
+    HoverTitlebarAction(Option<TitlebarAction>),
+    ToggleMinimalWindow,
+    ToggleMinimizeToTray,
+    ConfirmClose,
+    CancelClose,
     OpenNode(NodeKind),
     HoverNode(Option<NodeKind>),
-    HoverTitlebarClose(bool),
     HoverModalClose(bool),
     HoverRecord(bool),
     HoverPause(bool),
@@ -110,11 +130,20 @@ enum Message {
     SelectFormat(String),
     SelectMonitor(String),
     SelectScreenMode(ScreenMode),
+    SelectArea,
+    AreaSelected(Option<String>),
     ToggleShowCursor,
     ToggleScreenSound,
     ChooseOutputFolder,
     OutputFolderChosen(Option<String>),
     Noop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TitlebarAction {
+    Minimize,
+    Maximize,
+    Close,
 }
 
 struct Roton {
@@ -133,11 +162,17 @@ struct Roton {
     mic_mode: AudioMode,
     hovered_dropdown_option: Option<usize>,
     screen_mode: ScreenMode,
+    selected_area: Option<String>,
     show_cursor: bool,
     record_screen_sound: bool,
+    tray_icon: Option<TrayIcon>,
     selected_node: Option<NodeKind>,
     hovered_node: Option<NodeKind>,
-    is_titlebar_close_hovered: bool,
+    is_titlebar_menu_open: bool,
+    hovered_titlebar_menu_item: Option<usize>,
+    hovered_titlebar_action: Option<TitlebarAction>,
+    is_minimal_window: bool,
+    show_close_confirmation: bool,
     is_modal_close_hovered: bool,
     is_record_hovered: bool,
     is_pause_hovered: bool,
@@ -175,11 +210,17 @@ impl Roton {
             mic_mode: AudioMode::Mute,
             hovered_dropdown_option: None,
             screen_mode: ScreenMode::Fullscreen,
+            selected_area: None,
             show_cursor: true,
             record_screen_sound: false,
+            tray_icon: create_tray_icon(),
             selected_node: None,
             hovered_node: None,
-            is_titlebar_close_hovered: false,
+            is_titlebar_menu_open: false,
+            hovered_titlebar_menu_item: None,
+            hovered_titlebar_action: None,
+            is_minimal_window: false,
+            show_close_confirmation: false,
             is_modal_close_hovered: false,
             is_record_hovered: false,
             is_pause_hovered: false,
@@ -207,34 +248,126 @@ impl Roton {
         match message {
             Message::ToggleRecord => {
                 if self.is_recording {
-                    self.is_recording = false;
-                    self.is_paused = false;
-                    notify_recording_completed(self.settings.save_path.clone());
+                    if let Err(error) = self.finish_recording() {
+                        eprintln!("Failed to stop recording: {error}");
+                    }
                 } else {
-                    self.is_recording = true;
-                    self.is_paused = false;
-                    self.pause_blink_on = true;
-                    self.is_format_dropdown_open = false;
-                    self.is_monitor_dropdown_open = false;
-                    self.is_mic_dropdown_open = false;
-                    self.hovered_dropdown_option = None;
+                    if let Err(error) = self.start_recording() {
+                        eprintln!("Failed to start recording: {error}");
+                    }
                 }
             }
             Message::TogglePause => {
                 if self.is_recording {
-                    self.is_paused = !self.is_paused;
-                    if !self.is_paused {
-                        self.pause_blink_on = true;
+                    let result = if self.is_paused {
+                        self.recorder
+                            .lock()
+                            .map_err(|_| "Recorder lock poisoned".to_string())
+                            .and_then(|mut recorder| recorder.resume_session())
+                    } else {
+                        self.recorder
+                            .lock()
+                            .map_err(|_| "Recorder lock poisoned".to_string())
+                            .and_then(|mut recorder| recorder.pause_session())
+                    };
+
+                    if let Err(error) = result {
+                        eprintln!("Failed to toggle pause: {error}");
+                    } else {
+                        self.is_paused = !self.is_paused;
+                        if !self.is_paused {
+                            self.pause_blink_on = true;
+                        }
                     }
                 }
             }
             Message::DragWindow => {
+                if self.is_titlebar_menu_open {
+                    return Task::none();
+                }
                 return window::get_latest().and_then(window::drag);
             }
             Message::CloseWindow => {
+                if self.settings.minimize_to_tray {
+                    return self.minimize_to_tray();
+                }
+                if self.is_recording {
+                    self.show_close_confirmation = true;
+                    self.is_titlebar_menu_open = false;
+                    self.hovered_titlebar_menu_item = None;
+                    return Task::none();
+                }
                 return window::get_latest().and_then(window::close);
             }
+            Message::MaximizeWindow => {
+                self.is_titlebar_menu_open = false;
+                self.hovered_titlebar_menu_item = None;
+                return window::get_latest().and_then(|id| {
+                    window::get_maximized(id)
+                        .map(move |is_maximized| Message::SetWindowMaximized(!is_maximized))
+                });
+            }
+            Message::SetWindowMaximized(maximized) => {
+                return window::get_latest().and_then(move |id| window::maximize(id, maximized));
+            }
+            Message::MinimizeWindow => {
+                self.is_titlebar_menu_open = false;
+                self.hovered_titlebar_menu_item = None;
+                return window::get_latest().and_then(|id| window::minimize(id, true));
+            }
+            Message::RestoreWindow => {
+                return window::get_latest().and_then(|id| window::minimize(id, false));
+            }
+            Message::TrayTick => {
+                while let Ok(event) = TrayIconEvent::receiver().try_recv() {
+                    match event {
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        }
+                        | TrayIconEvent::DoubleClick {
+                            button: MouseButton::Left,
+                            ..
+                        } => return Task::done(Message::RestoreWindow),
+                        _ => {}
+                    }
+                }
+            }
+            Message::ToggleTitlebarMenu => {
+                self.is_titlebar_menu_open = !self.is_titlebar_menu_open;
+                self.hovered_titlebar_menu_item = None;
+            }
+            Message::HoverTitlebarMenuItem(item) => {
+                self.hovered_titlebar_menu_item = item;
+            }
+            Message::HoverTitlebarAction(action) => {
+                self.hovered_titlebar_action = action;
+            }
+            Message::ToggleMinimalWindow => {
+                self.is_titlebar_menu_open = false;
+                self.hovered_titlebar_menu_item = None;
+                self.is_minimal_window = !self.is_minimal_window;
+            }
+            Message::ToggleMinimizeToTray => {
+                self.is_titlebar_menu_open = false;
+                self.hovered_titlebar_menu_item = None;
+                self.settings.minimize_to_tray = !self.settings.minimize_to_tray;
+                let _ = self.settings.save();
+            }
+            Message::ConfirmClose => {
+                if let Err(error) = self.finish_recording() {
+                    eprintln!("Failed to stop recording before close: {error}");
+                }
+                self.show_close_confirmation = false;
+                return window::get_latest().and_then(window::close);
+            }
+            Message::CancelClose => {
+                self.show_close_confirmation = false;
+            }
             Message::OpenNode(kind) => {
+                self.is_titlebar_menu_open = false;
+                self.hovered_titlebar_menu_item = None;
                 self.selected_node = Some(kind);
                 self.hovered_node = None;
                 self.modal_progress = 0.0;
@@ -243,9 +376,6 @@ impl Roton {
                 if self.selected_node.is_none() {
                     self.hovered_node = kind;
                 }
-            }
-            Message::HoverTitlebarClose(is_hovered) => {
-                self.is_titlebar_close_hovered = is_hovered;
             }
             Message::HoverModalClose(is_hovered) => {
                 self.is_modal_close_hovered = is_hovered;
@@ -286,6 +416,8 @@ impl Roton {
             Message::CloseModal => {
                 self.selected_node = None;
                 self.hovered_node = None;
+                self.is_titlebar_menu_open = false;
+                self.hovered_titlebar_menu_item = None;
                 self.is_modal_close_hovered = false;
                 self.is_format_dropdown_open = false;
                 self.is_monitor_dropdown_open = false;
@@ -372,6 +504,25 @@ impl Roton {
                 }
                 self.screen_mode = mode;
             }
+            Message::SelectArea => {
+                if self.is_config_locked() {
+                    return Task::none();
+                }
+                if !self.has_slurp {
+                    eprintln!("slurp is not installed");
+                    return Task::none();
+                }
+                self.screen_mode = ScreenMode::SelectArea;
+                return Task::perform(select_area(), Message::AreaSelected);
+            }
+            Message::AreaSelected(area) => {
+                if self.is_config_locked() {
+                    return Task::none();
+                }
+                if let Some(area) = area {
+                    self.selected_area = Some(area);
+                }
+            }
             Message::ToggleShowCursor => {
                 if self.is_config_locked() {
                     return Task::none();
@@ -409,8 +560,123 @@ impl Roton {
         self.is_recording
     }
 
+    fn start_recording(&mut self) -> Result<(), String> {
+        if !self.has_wl_screenrec {
+            return Err("wl-screenrec is not installed".to_string());
+        }
+        if self.is_paused && !self.has_ffmpeg {
+            return Err("ffmpeg is required to finish paused recordings".to_string());
+        }
+
+        let output_path = self.recording_output_path();
+        let audio_mode = self.recording_audio_mode();
+        let mic = self.selected_audio_device(false);
+        let monitor = self.selected_audio_device(true);
+        let output = if self.screen_mode == ScreenMode::Fullscreen {
+            self.selected_monitor_output()
+        } else {
+            None
+        };
+        let geometry = if self.screen_mode == ScreenMode::SelectArea {
+            self.selected_area.as_deref()
+        } else {
+            None
+        };
+
+        self.recorder
+            .lock()
+            .map_err(|_| "Recorder lock poisoned".to_string())?
+            .start_session(
+                output_path.to_string_lossy().as_ref(),
+                geometry,
+                &audio_mode,
+                mic.as_deref(),
+                monitor.as_deref(),
+                output.as_deref(),
+                self.show_cursor,
+            )?;
+
+        self.is_recording = true;
+        self.is_paused = false;
+        self.pause_blink_on = true;
+        self.is_format_dropdown_open = false;
+        self.is_monitor_dropdown_open = false;
+        self.is_mic_dropdown_open = false;
+        self.hovered_dropdown_option = None;
+        Ok(())
+    }
+
+    fn finish_recording(&mut self) -> Result<(), String> {
+        if !self.has_ffmpeg {
+            return Err("ffmpeg is required to finish recordings".to_string());
+        }
+        self.recorder
+            .lock()
+            .map_err(|_| "Recorder lock poisoned".to_string())?
+            .finish_session()?;
+        self.is_recording = false;
+        self.is_paused = false;
+        notify_recording_completed(self.settings.save_path.clone());
+        Ok(())
+    }
+
+    fn minimize_to_tray(&self) -> Task<Message> {
+        if self.tray_icon.is_none() {
+            return window::get_latest().and_then(window::close);
+        }
+        window::get_latest().and_then(|id| window::minimize(id, true))
+    }
+
+    fn recording_output_path(&self) -> PathBuf {
+        let extension = self.selected_format.to_lowercase();
+        let filename = format!(
+            "recording_{}.{}",
+            chrono::Local::now().format("%Y-%m-%d_%H-%M-%S"),
+            extension
+        );
+        Path::new(&self.settings.save_path).join(filename)
+    }
+
+    fn recording_audio_mode(&self) -> String {
+        match (self.mic_mode, self.record_screen_sound) {
+            (AudioMode::Mic, true) => "Both",
+            (AudioMode::Mic, false) => "Mic",
+            (AudioMode::Mute, true) => "Screen",
+            (AudioMode::Mute, false) => "Mute",
+        }
+        .to_string()
+    }
+
+    fn selected_audio_device(&self, monitor: bool) -> Option<String> {
+        self.audio_devices
+            .iter()
+            .find(|device| {
+                device.is_monitor == monitor
+                    && if monitor {
+                        true
+                    } else {
+                        Some(device.description.as_str()) == self.selected_mic.as_deref()
+                    }
+            })
+            .map(|device| device.name.clone())
+    }
+
+    fn selected_monitor_output(&self) -> Option<String> {
+        self.selected_monitor
+            .as_deref()
+            .and_then(|monitor| monitor.split('·').next())
+            .map(str::trim)
+            .filter(|monitor| !monitor.is_empty())
+            .map(ToOwned::to_owned)
+    }
+
     fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = Vec::new();
+
+        subscriptions.push(window::close_requests().map(|_| Message::CloseWindow));
+        subscriptions.push(time::every(std::time::Duration::from_millis(350)).map(|_| {
+            Message::TrayTick
+        }));
 
         if self.selected_node.is_some() && self.modal_progress < 1.0 {
             subscriptions.push(window::frames().map(|_| Message::Frame));
@@ -456,7 +722,45 @@ impl Roton {
             .height(Length::Fill)
             .style(panel);
 
-        if let Some(kind) = self.selected_node {
+        let app: Element<_> = if self.is_titlebar_menu_open {
+            stack![
+                app,
+                mouse_area(
+                    container(Space::with_width(Length::Fill).height(Length::Fill))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                )
+                .on_press(Message::ToggleTitlebarMenu),
+                container(self.titlebar_menu())
+                    .padding(Padding::default().top(34).left(8))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(alignment::Horizontal::Left)
+                    .align_y(alignment::Vertical::Top)
+            ]
+            .into()
+        } else {
+            app.into()
+        };
+
+        if self.show_close_confirmation {
+            stack![
+                app,
+                mouse_area(
+                    container(Space::with_width(Length::Fill).height(Length::Fill))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .style(|_| scrim(1.0))
+                )
+                .on_press(Message::Noop),
+                container(self.close_confirmation())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(alignment::Horizontal::Center)
+                    .align_y(alignment::Vertical::Center)
+            ]
+            .into()
+        } else if let Some(kind) = self.selected_node {
             let progress = ease_out(self.modal_progress);
             let has_dropdown_open = self.is_format_dropdown_open
                 || self.is_monitor_dropdown_open
@@ -488,8 +792,40 @@ impl Roton {
             ]
             .into()
         } else {
-            app.into()
+            app
         }
+    }
+
+    fn close_confirmation(&self) -> Element<Message> {
+        container(
+            column![
+                text("Stop Recording?").size(18),
+                text("Roton is still recording. Closing now will stop and save the recording.")
+                    .size(13),
+                row![
+                    mouse_area(
+                        container(text("Cancel").size(13))
+                            .padding([10, 14])
+                            .style(pill)
+                    )
+                    .on_press(Message::CancelClose),
+                    Space::with_width(Length::Fill),
+                    mouse_area(
+                        container(text("Stop and Close").size(13))
+                            .padding([10, 14])
+                            .style(stop_button)
+                    )
+                    .on_press(Message::ConfirmClose),
+                ]
+                .spacing(10)
+                .align_y(alignment::Vertical::Center),
+            ]
+            .spacing(16),
+        )
+        .width(420)
+        .padding(18)
+        .style(|_| modal_panel(1.0))
+        .into()
     }
 
     fn sidebar(&self) -> Element<Message> {
@@ -608,25 +944,71 @@ impl Roton {
     }
 
     fn titlebar(&self) -> Element<Message> {
+        let titlebar_action = |action, icon: &'static str, icon_size: u16, message| {
+            mouse_area(
+                container(image(icon).width(icon_size).height(icon_size))
+                    .width(34)
+                    .height(34)
+                    .align_x(alignment::Horizontal::Center)
+                    .align_y(alignment::Vertical::Center)
+                    .style(if self.hovered_titlebar_action == Some(action) {
+                        titlebar_close_hovered
+                    } else {
+                        titlebar_close
+                    }),
+            )
+            .on_enter(Message::HoverTitlebarAction(Some(action)))
+            .on_exit(Message::HoverTitlebarAction(None))
+            .on_press(message)
+        };
+
+        let right_controls: Element<_> = if self.is_minimal_window {
+            row![titlebar_action(
+                TitlebarAction::Close,
+                "assets/icons/close.png",
+                15,
+                Message::CloseWindow
+            )]
+            .align_y(alignment::Vertical::Center)
+            .into()
+        } else {
+            row![
+                titlebar_action(
+                    TitlebarAction::Minimize,
+                    "assets/icons/minimize.png",
+                    14,
+                    Message::MinimizeWindow
+                ),
+                titlebar_action(
+                    TitlebarAction::Maximize,
+                    "assets/icons/maximize.png",
+                    13,
+                    Message::MaximizeWindow
+                ),
+                titlebar_action(
+                    TitlebarAction::Close,
+                    "assets/icons/close.png",
+                    15,
+                    Message::CloseWindow
+                ),
+            ]
+            .align_y(alignment::Vertical::Center)
+            .into()
+        };
+
         container(
             mouse_area(
                 row![
-                    container(image("assets/rotonicon.png").width(16).height(16)).padding([0, 10]),
+                    mouse_area(
+                        container(image("assets/rotonicon.png").width(16).height(16))
+                            .padding([7, 12])
+                            .style(titlebar_icon_button)
+                    )
+                    .on_press(Message::ToggleTitlebarMenu),
                     Space::with_width(Length::Fill),
                     text("Roton").size(15),
                     Space::with_width(Length::Fill),
-                    mouse_area(
-                        container(svg("assets/icons/x.svg").width(15).height(15))
-                            .padding(8)
-                            .style(if self.is_titlebar_close_hovered {
-                                titlebar_close_hovered
-                            } else {
-                                titlebar_close
-                            })
-                    )
-                    .on_enter(Message::HoverTitlebarClose(true))
-                    .on_exit(Message::HoverTitlebarClose(false))
-                    .on_press(Message::CloseWindow),
+                    right_controls,
                 ]
                 .align_y(alignment::Vertical::Center)
                 .height(34),
@@ -639,25 +1021,144 @@ impl Roton {
         .into()
     }
 
+    fn titlebar_menu(&self) -> Element<Message> {
+        let item = |index, label: &'static str, icon: &'static str, message| {
+            mouse_area(
+                container(
+                    row![image(icon).width(15).height(15), text(label).size(13),]
+                        .spacing(10)
+                        .align_y(alignment::Vertical::Center),
+                )
+                .padding([9, 10])
+                .width(Length::Fill)
+                .style(if self.hovered_titlebar_menu_item == Some(index) {
+                    titlebar_menu_item_hovered
+                } else {
+                    titlebar_menu_item
+                }),
+            )
+            .on_enter(Message::HoverTitlebarMenuItem(Some(index)))
+            .on_exit(Message::HoverTitlebarMenuItem(None))
+            .on_press(message)
+        };
+
+        let minimal_marker: Element<_> = if self.is_minimal_window {
+            svg("assets/icons/check.svg").width(15).height(15).into()
+        } else {
+            Space::with_width(15).height(15).into()
+        };
+
+        let minimal_item = mouse_area(
+            container(
+                row![minimal_marker, text("Minimal Window").size(13),]
+                    .spacing(10)
+                    .align_y(alignment::Vertical::Center),
+            )
+            .padding([9, 10])
+            .width(Length::Fill)
+            .style(if self.hovered_titlebar_menu_item == Some(3) {
+                titlebar_menu_item_hovered
+            } else {
+                titlebar_menu_item
+            }),
+        )
+        .on_enter(Message::HoverTitlebarMenuItem(Some(3)))
+        .on_exit(Message::HoverTitlebarMenuItem(None))
+        .on_press(Message::ToggleMinimalWindow);
+
+        let tray_marker: Element<_> = if self.settings.minimize_to_tray {
+            svg("assets/icons/check.svg").width(15).height(15).into()
+        } else {
+            Space::with_width(15).height(15).into()
+        };
+
+        let tray_item = mouse_area(
+            container(
+                row![tray_marker, text("Minimize to Tray").size(13),]
+                    .spacing(10)
+                    .align_y(alignment::Vertical::Center),
+            )
+            .padding([9, 10])
+            .width(Length::Fill)
+            .style(if self.hovered_titlebar_menu_item == Some(4) {
+                titlebar_menu_item_hovered
+            } else {
+                titlebar_menu_item
+            }),
+        )
+        .on_enter(Message::HoverTitlebarMenuItem(Some(4)))
+        .on_exit(Message::HoverTitlebarMenuItem(None))
+        .on_press(Message::ToggleMinimizeToTray);
+
+        mouse_area(
+            container(
+                column![
+                    item(0, "Close", "assets/icons/close.png", Message::CloseWindow),
+                    item(
+                        1,
+                        "Maximize",
+                        "assets/icons/maximize.png",
+                        Message::MaximizeWindow
+                    ),
+                    item(
+                        2,
+                        "Minimize",
+                        "assets/icons/minimize.png",
+                        Message::MinimizeWindow
+                    ),
+                    container(
+                        container(Space::with_height(1))
+                            .width(Length::Fill)
+                            .style(titlebar_menu_separator)
+                    )
+                    .padding([3, 0])
+                    .width(Length::Fill),
+                    minimal_item,
+                    tray_item,
+                ]
+                .spacing(0),
+            )
+            .padding(4)
+            .width(190)
+            .style(titlebar_menu_surface),
+        )
+        .on_press(Message::Noop)
+        .into()
+    }
+
     fn canvas(&self) -> Element<Message> {
-        container(
+        let nodes = container(
             column![
                 container(self.node(NodeKind::Output))
                     .width(Length::Fill)
                     .align_x(alignment::Horizontal::Center),
                 row![self.node(NodeKind::Screen), self.node(NodeKind::Mic),]
-                    .spacing(24)
+                    .spacing(NODE_ROW_SPACING)
                     .align_y(alignment::Vertical::Center),
             ]
-            .spacing(10)
+            .spacing(NODE_COLUMN_SPACING)
             .width(Length::Fill)
             .align_x(alignment::Horizontal::Center),
         )
         .width(Length::Fill)
-        .height(Length::Fill)
-        .padding(28)
-        .align_y(alignment::Vertical::Center)
-        .into()
+        .height(Length::Fill);
+
+        let graph = stack![
+            svg(connector_svg_handle())
+                .width(Length::Fill)
+                .height(Length::Fill),
+            nodes,
+        ]
+        .width(GRAPH_WIDTH)
+        .height(GRAPH_HEIGHT);
+
+        container(graph)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(28)
+            .align_x(alignment::Horizontal::Center)
+            .align_y(alignment::Vertical::Center)
+            .into()
     }
 
     fn node(&self, kind: NodeKind) -> Element<Message> {
@@ -686,8 +1187,8 @@ impl Roton {
                 .align_y(alignment::Vertical::Center),
             )
             .padding(14)
-            .width(148)
-            .height(134)
+            .width(NODE_CARD_WIDTH)
+            .height(NODE_CARD_HEIGHT)
             .align_x(alignment::Horizontal::Center)
             .align_y(alignment::Vertical::Center)
             .style(if self.is_config_locked() {
@@ -707,7 +1208,13 @@ impl Roton {
     fn node_detail(&self, kind: NodeKind) -> String {
         match kind {
             NodeKind::Output => format!("Format {}", self.selected_format),
-            NodeKind::Screen => self.screen_mode.label().to_string(),
+            NodeKind::Screen => {
+                if self.screen_mode == ScreenMode::SelectArea && self.selected_area.is_some() {
+                    "Selected Area".to_string()
+                } else {
+                    self.screen_mode.label().to_string()
+                }
+            }
             NodeKind::Mic => {
                 if self.mic_mode == AudioMode::Mute {
                     "Muted".to_string()
@@ -795,7 +1302,7 @@ impl Roton {
                     .on_press(if self.is_config_locked() {
                         Message::Noop
                     } else {
-                        Message::SelectScreenMode(ScreenMode::SelectArea)
+                        Message::SelectArea
                     })
                 } else {
                     mouse_area(container(Space::with_height(0))).on_press(Message::Noop)
@@ -1098,6 +1605,49 @@ impl Roton {
     }
 }
 
+fn connector_svg_handle() -> svg::Handle {
+    let center_x = GRAPH_WIDTH / 2.0;
+    let output_y = NODE_CARD_HEIGHT;
+    let lower_y = NODE_CARD_HEIGHT + NODE_COLUMN_SPACING;
+    let split_y = output_y + (NODE_COLUMN_SPACING * 0.45);
+    let screen_x = NODE_CARD_WIDTH / 2.0;
+    let mic_x = NODE_CARD_WIDTH + NODE_ROW_SPACING + (NODE_CARD_WIDTH / 2.0);
+
+    let markup = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+  <path
+    d="M {cx} {output_y}
+       L {cx} {split_y}
+       M {cx} {split_y}
+       C {cx} {left_c1_y}, {screen_x} {left_c2_y}, {screen_x} {lower_y}
+       M {cx} {split_y}
+       C {cx} {right_c1_y}, {mic_x} {right_c2_y}, {mic_x} {lower_y}"
+    fill="none"
+    stroke="#f4f2eb"
+    stroke-opacity="0.48"
+    stroke-width="2.25"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    shape-rendering="geometricPrecision"
+  />
+</svg>"##,
+        width = GRAPH_WIDTH,
+        height = GRAPH_HEIGHT,
+        cx = center_x,
+        output_y = output_y,
+        split_y = split_y,
+        screen_x = screen_x,
+        mic_x = mic_x,
+        lower_y = lower_y,
+        left_c1_y = split_y + 18.0,
+        left_c2_y = lower_y - 18.0,
+        right_c1_y = split_y + 18.0,
+        right_c2_y = lower_y - 18.0,
+    );
+
+    svg::Handle::from_memory(markup.into_bytes())
+}
+
 fn panel(_: &Theme) -> container::Style {
     container::Style {
         background: Some(Color::from_rgb8(34, 34, 32).into()),
@@ -1139,6 +1689,55 @@ fn titlebar_close_hovered(_: &Theme) -> container::Style {
         background: Some(Color::from_rgb8(50, 50, 47).into()),
         text_color: Some(Color::from_rgb8(236, 234, 228)),
         border: border::rounded(0).width(0),
+        shadow: Shadow::default(),
+    }
+}
+
+fn titlebar_icon_button(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::TRANSPARENT.into()),
+        text_color: Some(Color::from_rgb8(236, 234, 228)),
+        border: border::rounded(8).width(0),
+        shadow: Shadow::default(),
+    }
+}
+
+fn titlebar_menu_surface(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgb8(47, 47, 44).into()),
+        text_color: Some(Color::from_rgb8(236, 234, 228)),
+        border: border::rounded(9).width(0),
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.28),
+            offset: iced::Vector::new(0.0, 8.0),
+            blur_radius: 18.0,
+        },
+    }
+}
+
+fn titlebar_menu_item(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::TRANSPARENT.into()),
+        text_color: Some(Color::from_rgb8(232, 230, 222)),
+        border: border::rounded(6).width(0),
+        shadow: Shadow::default(),
+    }
+}
+
+fn titlebar_menu_item_hovered(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgb8(62, 62, 58).into()),
+        text_color: Some(Color::from_rgb8(246, 244, 238)),
+        border: border::rounded(6).width(0),
+        shadow: Shadow::default(),
+    }
+}
+
+fn titlebar_menu_separator(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgb8(74, 74, 70).into()),
+        text_color: Some(Color::TRANSPARENT),
+        border: border::rounded(1).width(0),
         shadow: Shadow::default(),
     }
 }
@@ -1393,7 +1992,7 @@ fn node_card(_: &Theme) -> container::Style {
     container::Style {
         background: Some(Color::from_rgb8(45, 45, 42).into()),
         text_color: Some(Color::from_rgb8(232, 230, 222)),
-        border: border::rounded(8).width(0),
+        border: border::rounded(12).width(0),
         shadow: Shadow::default(),
     }
 }
@@ -1402,7 +2001,7 @@ fn selected_mode_card(_: &Theme) -> container::Style {
     container::Style {
         background: Some(Color::from_rgb8(54, 59, 64).into()),
         text_color: Some(Color::from_rgb8(235, 242, 250)),
-        border: border::rounded(8).width(0),
+        border: border::rounded(12).width(0),
         shadow: Shadow::default(),
     }
 }
@@ -1411,7 +2010,7 @@ fn mode_card_disabled(_: &Theme) -> container::Style {
     container::Style {
         background: Some(Color::from_rgb8(43, 43, 40).into()),
         text_color: Some(Color::from_rgb8(132, 130, 124)),
-        border: border::rounded(8).width(0),
+        border: border::rounded(12).width(0),
         shadow: Shadow::default(),
     }
 }
@@ -1420,7 +2019,7 @@ fn node_card_hovered(_: &Theme) -> container::Style {
     container::Style {
         background: Some(Color::from_rgb8(50, 50, 47).into()),
         text_color: Some(Color::from_rgb8(244, 242, 235)),
-        border: border::rounded(8).width(0),
+        border: border::rounded(12).width(0),
         shadow: Shadow::default(),
     }
 }
@@ -1429,7 +2028,7 @@ fn node_card_disabled(_: &Theme) -> container::Style {
     container::Style {
         background: Some(Color::from_rgb8(41, 41, 38).into()),
         text_color: Some(Color::from_rgb8(150, 148, 140)),
-        border: border::rounded(8).width(0),
+        border: border::rounded(12).width(0),
         shadow: Shadow::default(),
     }
 }
@@ -1517,6 +2116,34 @@ async fn pick_output_folder() -> Option<String> {
         .set_title("Choose save folder")
         .pick_folder()
         .map(|path| path.to_string_lossy().to_string())
+}
+
+async fn select_area() -> Option<String> {
+    Command::new("slurp")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            let area = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            (!area.is_empty()).then_some(area)
+        })
+}
+
+fn create_tray_icon() -> Option<TrayIcon> {
+    let icon = load_tray_icon("assets/rotonicon.png").ok()?;
+    TrayIconBuilder::new()
+        .with_tooltip("Roton")
+        .with_icon(icon)
+        .build()
+        .ok()
+}
+
+fn load_tray_icon(path: &str) -> Result<Icon, String> {
+    let image = ::image::open(path)
+        .map_err(|error| error.to_string())?
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    Icon::from_rgba(image.into_raw(), width, height).map_err(|error| error.to_string())
 }
 
 fn display_monitors() -> Vec<String> {

@@ -7,6 +7,8 @@ use std::path::PathBuf;
 pub struct Settings {
     pub save_path: String,
     pub audio_mode: String,
+    #[serde(default)]
+    pub minimize_to_tray: bool,
 }
 
 impl Default for Settings {
@@ -23,6 +25,7 @@ impl Default for Settings {
         Self {
             save_path,
             audio_mode: "Mute".to_string(), // Matches Slint UI default
+            minimize_to_tray: false,
         }
     }
 }
