@@ -2130,12 +2130,30 @@ async fn select_area() -> Option<String> {
 }
 
 fn create_tray_icon() -> Option<TrayIcon> {
+    if !has_appindicator_runtime() {
+        eprintln!("Tray disabled: libayatana-appindicator3/libappindicator3 is not installed");
+        return None;
+    }
+
     let icon = load_tray_icon("assets/rotonicon.png").ok()?;
     TrayIconBuilder::new()
         .with_tooltip("Roton")
         .with_icon(icon)
         .build()
         .ok()
+}
+
+fn has_appindicator_runtime() -> bool {
+    [
+        "/usr/lib/libayatana-appindicator3.so",
+        "/usr/lib/libayatana-appindicator3.so.1",
+        "/usr/lib/libappindicator3.so",
+        "/usr/lib/libappindicator3.so.1",
+        "/usr/local/lib/libayatana-appindicator3.so",
+        "/usr/local/lib/libappindicator3.so",
+    ]
+    .iter()
+    .any(|path| Path::new(path).exists())
 }
 
 fn load_tray_icon(path: &str) -> Result<Icon, String> {

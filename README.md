@@ -33,6 +33,12 @@ sudo pacman -S ffmpeg slurp xdg-desktop-portal pipewire-pulse
 
 Roton also expects `wl-screenrec` and `pactl` to be available. `wl-screenrec` is commonly installed from AUR.
 
+Tray support needs an AppIndicator runtime:
+
+```sh
+sudo pacman -S libayatana-appindicator
+```
+
 ## Notes
 
 - This build targets Wayland.
