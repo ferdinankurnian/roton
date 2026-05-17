@@ -627,6 +627,7 @@ impl Roton {
         let video_path = self.current_recording_path.take();
         self.is_recording = false;
         self.is_paused = false;
+        self.elapsed = 0;
         notify_recording_completed(self.settings.save_path.clone(), video_path);
         Ok(())
     }
