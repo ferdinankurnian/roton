@@ -13,4 +13,4 @@ notify-rust = "4.11"
 rfd = { version = "0.15", features = ["xdg-portal"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.147"
-tray-icon = "0.24"
+tray-icon = { version = "0.24", default-features = false, features = ["gtk"] }
