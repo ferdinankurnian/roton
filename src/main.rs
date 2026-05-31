@@ -189,7 +189,7 @@ struct Roton {
     elapsed: u64,
     current_recording_path: Option<PathBuf>,
     has_wl_screenrec: bool,
-    has_slurp: bool,
+    has_scrop: bool,
     has_ffmpeg: bool,
     has_pactl: bool,
 }
@@ -238,7 +238,7 @@ impl Roton {
             elapsed: 0,
             current_recording_path: None,
             has_wl_screenrec: Recorder::is_installed("wl-screenrec"),
-            has_slurp: Recorder::is_installed("slurp"),
+            has_scrop: Recorder::is_installed("scrop"),
             has_ffmpeg: Recorder::is_installed("ffmpeg"),
             has_pactl: Recorder::is_installed("pactl"),
         };
@@ -516,8 +516,8 @@ impl Roton {
                 if self.is_config_locked() {
                     return Task::none();
                 }
-                if !self.has_slurp {
-                    eprintln!("slurp is not installed");
+                if !self.has_scrop {
+                    eprintln!("scrop is not installed");
                     return Task::none();
                 }
                 self.screen_mode = ScreenMode::SelectArea;
@@ -686,9 +686,8 @@ impl Roton {
         let mut subscriptions = Vec::new();
 
         subscriptions.push(window::close_requests().map(|_| Message::CloseWindow));
-        subscriptions.push(time::every(std::time::Duration::from_millis(350)).map(|_| {
-            Message::TrayTick
-        }));
+        subscriptions
+            .push(time::every(std::time::Duration::from_millis(350)).map(|_| Message::TrayTick));
 
         if self.selected_node.is_some() && self.modal_progress < 1.0 {
             subscriptions.push(window::frames().map(|_| Message::Frame));
@@ -930,21 +929,23 @@ impl Roton {
             record_button.into()
         };
 
+        let status_row = row![
+            text(status).size(12),
+            Space::with_width(Length::Fill),
+            text(format!(
+                "{:02}.{:02}:00",
+                self.elapsed / 60,
+                self.elapsed % 60
+            ))
+            .size(12),
+        ]
+        .width(Length::Fill)
+        .align_y(alignment::Vertical::Center);
+
         container(
             column![
+                status_row,
                 controls,
-                row![
-                    text(status).size(12),
-                    Space::with_width(Length::Fill),
-                    text(format!(
-                        "{:02}.{:02}:00",
-                        self.elapsed / 60,
-                        self.elapsed % 60
-                    ))
-                    .size(12),
-                ]
-                .width(Length::Fill)
-                .align_y(alignment::Vertical::Center),
                 Space::with_height(Length::Fill),
                 column![
                     text("Roton v1.0.0").size(12),
@@ -2173,7 +2174,7 @@ async fn pick_output_folder() -> Option<String> {
 }
 
 async fn select_area() -> Option<String> {
-    Command::new("slurp")
+    Command::new("scrop")
         .output()
         .ok()
         .filter(|output| output.status.success())

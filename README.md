@@ -6,7 +6,7 @@ Iced rewrite of Roton, a Wayland `wl-screenrec` wrapper focused on fast screen r
 
 - `wl-screenrec` recording backend
 - MP4, MKV, and WEBM output
-- fullscreen or `slurp` area recording
+- fullscreen or `scrop` area recording
 - monitor selection
 - optional cursor capture
 - optional screen sound capture
@@ -28,7 +28,8 @@ cargo run
 Install these on Arch:
 
 ```sh
-sudo pacman -S ffmpeg slurp xdg-desktop-portal pipewire-pulse
+sudo pacman -S ffmpeg xdg-desktop-portal pipewire-pulse
+yay -S scrop-bin
 ```
 
 Roton also expects `wl-screenrec` and `pactl` to be available. `wl-screenrec` is commonly installed from AUR.
@@ -43,5 +44,5 @@ sudo pacman -S libayatana-appindicator
 
 - This build targets Wayland.
 - Audio devices are read from `pactl list sources`.
-- Screen area selection uses `slurp`.
+- Screen area selection uses `scrop`.
 - Tray support uses StatusNotifier/AppIndicator through `tray-icon`.
