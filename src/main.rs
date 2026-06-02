@@ -1,17 +1,26 @@
 mod audio;
+mod components;
 mod config;
 mod recorder;
 
 use audio::AudioDevice;
-use config::Settings;
+use components::button::{self as ui_button, Variant as ButtonVariant};
+use components::dropdown::{self, Entry as DropdownEntry, OptionItem};
+use components::menu::{self, Item as MenuItem};
+use components::overlay::event_blocker;
+use components::{dialog, styles as component_styles, textbox};
+use config::{Settings, Workspace};
 use display_info::DisplayInfo;
-use iced::widget::{column, container, image, mouse_area, row, stack, svg, text, Space};
+use iced::widget::{
+    column, container, image, mouse_area, row, stack, svg, text, text_input, Space,
+};
 use iced::{
     alignment, application, border, time, window, Color, Element, Length, Padding, Shadow,
     Subscription, Task, Theme,
 };
 use notify_rust::Notification;
 use recorder::Recorder;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -60,6 +69,12 @@ impl ScreenMode {
 enum AudioMode {
     Mute,
     Mic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceNameAction {
+    Create,
+    Rename,
 }
 
 impl AudioMode {
@@ -112,7 +127,6 @@ enum Message {
     HoverModalClose(bool),
     HoverRecord(bool),
     HoverPause(bool),
-    HoverChoose(bool),
     HoverScreenMode(Option<ScreenMode>),
     HoverMicToggle(bool),
     HoverShowCursor(bool),
@@ -121,11 +135,6 @@ enum Message {
     RecordingTick,
     Frame,
     CloseModal,
-    ToggleFormatDropdown,
-    ToggleMonitorDropdown,
-    ToggleMicDropdown,
-    HoverDropdownOption(Option<usize>),
-    DismissDropdown,
     SelectMic(String),
     SelectMicMode(AudioMode),
     SelectFormat(String),
@@ -137,6 +146,14 @@ enum Message {
     ToggleScreenSound,
     ChooseOutputFolder,
     OutputFolderChosen(Option<String>),
+    ToggleWorkspaceActions,
+    SelectWorkspace(usize),
+    OpenCreateWorkspace,
+    OpenRenameWorkspace,
+    DeleteWorkspace,
+    WorkspaceNameChanged(String),
+    ConfirmWorkspaceName,
+    CancelWorkspaceName,
     Noop,
 }
 
@@ -150,18 +167,18 @@ enum TitlebarAction {
 struct Roton {
     recorder: Arc<Mutex<Recorder>>,
     settings: Settings,
+    is_workspace_actions_open: bool,
+    workspace_name_action: Option<WorkspaceNameAction>,
+    workspace_name: String,
+    workspace_name_error: Option<String>,
     audio_devices: Vec<AudioDevice>,
     formats: Vec<String>,
     selected_format: String,
-    is_format_dropdown_open: bool,
     monitors: Vec<String>,
     selected_monitor: Option<String>,
-    is_monitor_dropdown_open: bool,
     mics: Vec<String>,
     selected_mic: Option<String>,
-    is_mic_dropdown_open: bool,
     mic_mode: AudioMode,
-    hovered_dropdown_option: Option<usize>,
     screen_mode: ScreenMode,
     selected_area: Option<String>,
     show_cursor: bool,
@@ -177,7 +194,6 @@ struct Roton {
     is_modal_close_hovered: bool,
     is_record_hovered: bool,
     is_pause_hovered: bool,
-    is_choose_hovered: bool,
     hovered_screen_mode: Option<ScreenMode>,
     is_mic_toggle_hovered: bool,
     is_show_cursor_hovered: bool,
@@ -199,18 +215,18 @@ impl Roton {
         let mut app = Self {
             recorder: Arc::new(Mutex::new(Recorder::new())),
             settings: Settings::load(),
+            is_workspace_actions_open: false,
+            workspace_name_action: None,
+            workspace_name: String::new(),
+            workspace_name_error: None,
             audio_devices: Vec::new(),
             formats: vec!["MP4".to_string(), "MKV".to_string(), "WEBM".to_string()],
             selected_format: "MP4".to_string(),
-            is_format_dropdown_open: false,
             monitors: display_monitors(),
             selected_monitor: None,
-            is_monitor_dropdown_open: false,
             mics: Vec::new(),
             selected_mic: None,
-            is_mic_dropdown_open: false,
             mic_mode: AudioMode::Mute,
-            hovered_dropdown_option: None,
             screen_mode: ScreenMode::Fullscreen,
             selected_area: None,
             show_cursor: true,
@@ -226,7 +242,6 @@ impl Roton {
             is_modal_close_hovered: false,
             is_record_hovered: false,
             is_pause_hovered: false,
-            is_choose_hovered: false,
             hovered_screen_mode: None,
             is_mic_toggle_hovered: false,
             is_show_cursor_hovered: false,
@@ -244,12 +259,14 @@ impl Roton {
         };
         app.refresh_audio_devices();
         app.selected_monitor = app.monitors.first().cloned();
+        app.apply_active_workspace();
         app
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::ToggleRecord => {
+                self.close_workspace_menus();
                 if self.is_recording {
                     if let Err(error) = self.finish_recording() {
                         eprintln!("Failed to stop recording: {error}");
@@ -338,6 +355,7 @@ impl Roton {
                 }
             }
             Message::ToggleTitlebarMenu => {
+                self.close_workspace_menus();
                 self.is_titlebar_menu_open = !self.is_titlebar_menu_open;
                 self.hovered_titlebar_menu_item = None;
             }
@@ -371,6 +389,7 @@ impl Roton {
             Message::OpenNode(kind) => {
                 self.is_titlebar_menu_open = false;
                 self.hovered_titlebar_menu_item = None;
+                self.close_workspace_menus();
                 self.selected_node = Some(kind);
                 self.hovered_node = None;
                 self.modal_progress = 0.0;
@@ -388,9 +407,6 @@ impl Roton {
             }
             Message::HoverPause(is_hovered) => {
                 self.is_pause_hovered = is_hovered;
-            }
-            Message::HoverChoose(is_hovered) => {
-                self.is_choose_hovered = is_hovered;
             }
             Message::HoverScreenMode(mode) => {
                 self.hovered_screen_mode = mode;
@@ -427,90 +443,44 @@ impl Roton {
                 self.is_titlebar_menu_open = false;
                 self.hovered_titlebar_menu_item = None;
                 self.is_modal_close_hovered = false;
-                self.is_format_dropdown_open = false;
-                self.is_monitor_dropdown_open = false;
-                self.is_mic_dropdown_open = false;
-                self.hovered_dropdown_option = None;
                 self.modal_progress = 0.0;
-            }
-            Message::ToggleFormatDropdown => {
-                if self.is_config_locked() {
-                    return Task::none();
-                }
-                self.is_format_dropdown_open = !self.is_format_dropdown_open;
-                self.is_monitor_dropdown_open = false;
-                self.is_mic_dropdown_open = false;
-                self.hovered_dropdown_option = None;
-            }
-            Message::ToggleMonitorDropdown => {
-                if self.is_config_locked() {
-                    return Task::none();
-                }
-                self.is_monitor_dropdown_open = !self.is_monitor_dropdown_open;
-                self.is_format_dropdown_open = false;
-                self.is_mic_dropdown_open = false;
-                self.hovered_dropdown_option = None;
-            }
-            Message::ToggleMicDropdown => {
-                if self.is_config_locked() {
-                    return Task::none();
-                }
-                self.is_mic_dropdown_open = !self.is_mic_dropdown_open;
-                self.is_format_dropdown_open = false;
-                self.is_monitor_dropdown_open = false;
-                self.hovered_dropdown_option = None;
-            }
-            Message::HoverDropdownOption(option) => {
-                self.hovered_dropdown_option = option;
-            }
-            Message::DismissDropdown => {
-                self.is_format_dropdown_open = false;
-                self.is_monitor_dropdown_open = false;
-                self.is_mic_dropdown_open = false;
-                self.hovered_dropdown_option = None;
             }
             Message::SelectFormat(format) => {
                 if self.is_config_locked() {
                     return Task::none();
                 }
                 self.selected_format = format;
-                self.is_format_dropdown_open = false;
-                self.hovered_dropdown_option = None;
                 self.hovered_node = None;
+                self.persist_workspace_state();
             }
             Message::SelectMonitor(monitor) => {
                 if self.is_config_locked() {
                     return Task::none();
                 }
                 self.selected_monitor = Some(monitor);
-                self.is_monitor_dropdown_open = false;
-                self.hovered_dropdown_option = None;
                 self.hovered_node = None;
+                self.persist_workspace_state();
             }
             Message::SelectMic(mic) => {
                 if self.is_config_locked() {
                     return Task::none();
                 }
                 self.selected_mic = Some(mic);
-                self.is_mic_dropdown_open = false;
-                self.hovered_dropdown_option = None;
+                self.persist_workspace_state();
             }
             Message::SelectMicMode(mode) => {
                 if self.is_config_locked() {
                     return Task::none();
                 }
                 self.mic_mode = mode;
-                self.settings.audio_mode = match mode {
-                    AudioMode::Mute => "Mute".to_string(),
-                    AudioMode::Mic => "Mic".to_string(),
-                };
-                let _ = self.settings.save();
+                self.persist_workspace_state();
             }
             Message::SelectScreenMode(mode) => {
                 if self.is_config_locked() {
                     return Task::none();
                 }
                 self.screen_mode = mode;
+                self.persist_workspace_state();
             }
             Message::SelectArea => {
                 if self.is_config_locked() {
@@ -521,6 +491,7 @@ impl Roton {
                     return Task::none();
                 }
                 self.screen_mode = ScreenMode::SelectArea;
+                self.persist_workspace_state();
                 return Task::perform(select_area(), Message::AreaSelected);
             }
             Message::AreaSelected(area) => {
@@ -529,6 +500,7 @@ impl Roton {
                 }
                 if let Some(area) = area {
                     self.selected_area = Some(area);
+                    self.persist_workspace_state();
                 }
             }
             Message::ToggleShowCursor => {
@@ -536,12 +508,14 @@ impl Roton {
                     return Task::none();
                 }
                 self.show_cursor = !self.show_cursor;
+                self.persist_workspace_state();
             }
             Message::ToggleScreenSound => {
                 if self.is_config_locked() {
                     return Task::none();
                 }
                 self.record_screen_sound = !self.record_screen_sound;
+                self.persist_workspace_state();
             }
             Message::ChooseOutputFolder => {
                 if self.is_config_locked() {
@@ -554,14 +528,215 @@ impl Roton {
                     return Task::none();
                 }
                 if let Some(path) = path {
-                    self.settings.save_path = path;
-                    let _ = self.settings.save();
+                    self.settings.active_workspace_mut().save_path = path;
+                    self.persist_workspace_state();
                 }
+            }
+            Message::ToggleWorkspaceActions => {
+                if self.is_config_locked() {
+                    return Task::none();
+                }
+                self.is_titlebar_menu_open = false;
+                self.hovered_titlebar_menu_item = None;
+                self.is_workspace_actions_open = !self.is_workspace_actions_open;
+            }
+            Message::SelectWorkspace(index) => {
+                if self.is_config_locked() || index >= self.settings.workspaces.len() {
+                    return Task::none();
+                }
+                self.persist_workspace_state();
+                self.settings.active_workspace = index;
+                self.apply_active_workspace();
+                self.close_workspace_menus();
+                self.save_settings();
+            }
+            Message::OpenCreateWorkspace => {
+                if self.is_config_locked() {
+                    return Task::none();
+                }
+                self.close_workspace_menus();
+                self.workspace_name_action = Some(WorkspaceNameAction::Create);
+                self.workspace_name.clear();
+                self.workspace_name_error = None;
+                return text_input::focus("workspace-name");
+            }
+            Message::OpenRenameWorkspace => {
+                if self.is_config_locked() {
+                    return Task::none();
+                }
+                self.close_workspace_menus();
+                self.workspace_name_action = Some(WorkspaceNameAction::Rename);
+                self.workspace_name = self.settings.active_workspace().name.clone();
+                self.workspace_name_error = None;
+                return Task::batch([
+                    text_input::focus("workspace-name"),
+                    text_input::select_all("workspace-name"),
+                ]);
+            }
+            Message::DeleteWorkspace => {
+                if self.is_config_locked() {
+                    return Task::none();
+                }
+                self.delete_active_workspace();
+            }
+            Message::WorkspaceNameChanged(name) => {
+                self.workspace_name = name;
+                self.workspace_name_error = None;
+            }
+            Message::ConfirmWorkspaceName => {
+                self.confirm_workspace_name();
+            }
+            Message::CancelWorkspaceName => {
+                self.workspace_name_action = None;
+                self.workspace_name.clear();
+                self.workspace_name_error = None;
             }
             Message::Noop => {}
         }
 
         Task::none()
+    }
+
+    fn close_workspace_menus(&mut self) {
+        self.is_workspace_actions_open = false;
+    }
+
+    fn apply_active_workspace(&mut self) {
+        let workspace = self.settings.active_workspace().clone();
+        self.selected_format = workspace.selected_format;
+        self.selected_monitor = workspace
+            .selected_monitor
+            .filter(|monitor| self.monitors.contains(monitor))
+            .or_else(|| self.monitors.first().cloned());
+        self.selected_mic = workspace
+            .selected_mic
+            .filter(|mic| self.mics.contains(mic))
+            .or_else(|| self.mics.first().cloned());
+        self.mic_mode = if workspace.mic_mode == "Mic" {
+            AudioMode::Mic
+        } else {
+            AudioMode::Mute
+        };
+        self.screen_mode = if workspace.screen_mode == "SelectArea" {
+            ScreenMode::SelectArea
+        } else {
+            ScreenMode::Fullscreen
+        };
+        self.selected_area = workspace.selected_area;
+        self.show_cursor = workspace.show_cursor;
+        self.record_screen_sound = workspace.record_screen_sound;
+    }
+
+    fn persist_workspace_state(&mut self) {
+        let workspace = self.settings.active_workspace_mut();
+        workspace.selected_format = self.selected_format.clone();
+        workspace.selected_monitor = self.selected_monitor.clone();
+        workspace.selected_mic = self.selected_mic.clone();
+        workspace.mic_mode = match self.mic_mode {
+            AudioMode::Mute => "Mute",
+            AudioMode::Mic => "Mic",
+        }
+        .to_string();
+        workspace.screen_mode = match self.screen_mode {
+            ScreenMode::Fullscreen => "Fullscreen",
+            ScreenMode::SelectArea => "SelectArea",
+        }
+        .to_string();
+        workspace.selected_area = self.selected_area.clone();
+        workspace.show_cursor = self.show_cursor;
+        workspace.record_screen_sound = self.record_screen_sound;
+        self.save_settings();
+    }
+
+    fn save_settings(&self) {
+        if let Err(error) = self.settings.save() {
+            eprintln!("Failed to save settings: {error}");
+        }
+    }
+
+    fn confirm_workspace_name(&mut self) {
+        let name = self.workspace_name.trim().to_string();
+        let Some(action) = self.workspace_name_action else {
+            return;
+        };
+
+        if let Some(error) = self.validate_workspace_name(&name, action) {
+            self.workspace_name_error = Some(error);
+            return;
+        }
+
+        match action {
+            WorkspaceNameAction::Create => {
+                let workspace = Workspace::named(&name);
+                if let Err(error) = fs::create_dir_all(&workspace.save_path) {
+                    self.workspace_name_error =
+                        Some(format!("Could not create workspace folder: {error}"));
+                    return;
+                }
+                self.persist_workspace_state();
+                self.settings.workspaces.push(workspace);
+                self.settings.active_workspace = self.settings.workspaces.len() - 1;
+                self.apply_active_workspace();
+            }
+            WorkspaceNameAction::Rename => {
+                self.settings.active_workspace_mut().name = name;
+            }
+        }
+
+        self.save_settings();
+        self.workspace_name_action = None;
+        self.workspace_name.clear();
+        self.workspace_name_error = None;
+    }
+
+    fn validate_workspace_name(&self, name: &str, action: WorkspaceNameAction) -> Option<String> {
+        if name.is_empty() {
+            return Some("Workspace name cannot be empty.".to_string());
+        }
+
+        if name.chars().count() > 48 {
+            return Some("Workspace name must be 48 characters or fewer.".to_string());
+        }
+
+        if name == "."
+            || name == ".."
+            || name
+                .chars()
+                .any(|character| character == '/' || character == '\\' || character.is_control())
+        {
+            return Some("Workspace name cannot contain path separators.".to_string());
+        }
+
+        let duplicate = self
+            .settings
+            .workspaces
+            .iter()
+            .enumerate()
+            .any(|(index, workspace)| {
+                let is_active_rename = action == WorkspaceNameAction::Rename
+                    && index == self.settings.active_workspace;
+                !is_active_rename && workspace.name.eq_ignore_ascii_case(name)
+            });
+
+        duplicate.then(|| "A workspace with that name already exists.".to_string())
+    }
+
+    fn delete_active_workspace(&mut self) {
+        if self.settings.workspaces.len() <= 1 {
+            self.close_workspace_menus();
+            return;
+        }
+
+        self.settings
+            .workspaces
+            .remove(self.settings.active_workspace);
+        self.settings.active_workspace = self
+            .settings
+            .active_workspace
+            .min(self.settings.workspaces.len() - 1);
+        self.apply_active_workspace();
+        self.close_workspace_menus();
+        self.save_settings();
     }
 
     fn is_config_locked(&self) -> bool {
@@ -577,6 +752,10 @@ impl Roton {
         }
 
         let output_path = self.recording_output_path();
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("Failed to create output folder: {error}"))?;
+        }
         let audio_mode = self.recording_audio_mode();
         let mic = self.selected_audio_device(false);
         let monitor = self.selected_audio_device(true);
@@ -609,10 +788,6 @@ impl Roton {
         self.pause_blink_on = true;
         self.elapsed = 0;
         self.current_recording_path = Some(output_path);
-        self.is_format_dropdown_open = false;
-        self.is_monitor_dropdown_open = false;
-        self.is_mic_dropdown_open = false;
-        self.hovered_dropdown_option = None;
         Ok(())
     }
 
@@ -628,7 +803,10 @@ impl Roton {
         self.is_recording = false;
         self.is_paused = false;
         self.elapsed = 0;
-        notify_recording_completed(self.settings.save_path.clone(), video_path);
+        notify_recording_completed(
+            self.settings.active_workspace().save_path.clone(),
+            video_path,
+        );
         Ok(())
     }
 
@@ -646,7 +824,7 @@ impl Roton {
             chrono::Local::now().format("%Y-%m-%d_%H-%M-%S"),
             extension
         );
-        Path::new(&self.settings.save_path).join(filename)
+        Path::new(&self.settings.active_workspace().save_path).join(filename)
     }
 
     fn recording_audio_mode(&self) -> String {
@@ -742,12 +920,14 @@ impl Roton {
         let app: Element<_> = if self.is_titlebar_menu_open {
             stack![
                 app,
-                mouse_area(
-                    container(Space::with_width(Length::Fill).height(Length::Fill))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                )
-                .on_press(Message::ToggleTitlebarMenu),
+                event_blocker(
+                    mouse_area(
+                        container(Space::with_width(Length::Fill).height(Length::Fill))
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                    )
+                    .on_press(Message::ToggleTitlebarMenu)
+                ),
                 container(self.titlebar_menu())
                     .padding(Padding::default().top(34).left(8))
                     .width(Length::Fill)
@@ -760,16 +940,46 @@ impl Roton {
             app.into()
         };
 
-        if self.show_close_confirmation {
+        let app: Element<_> = if self.is_workspace_actions_open {
             stack![
                 app,
-                mouse_area(
-                    container(Space::with_width(Length::Fill).height(Length::Fill))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .style(|_| scrim(1.0))
-                )
-                .on_press(Message::Noop),
+                event_blocker(
+                    mouse_area(
+                        container(Space::with_width(Length::Fill).height(Length::Fill))
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                    )
+                    .on_press(Message::ToggleWorkspaceActions)
+                ),
+                container(column![
+                    Space::with_height(98),
+                    container(self.workspace_actions_menu()).width(118),
+                ])
+                .width(210)
+                .height(Length::Fill)
+                .padding([0, 18])
+                .align_x(alignment::Horizontal::Right)
+            ]
+            .into()
+        } else {
+            app
+        };
+
+        if self.workspace_name_action.is_some() {
+            stack![
+                app,
+                dialog::backdrop(1.0, Message::CancelWorkspaceName),
+                container(mouse_area(self.workspace_name_modal()).on_press(Message::Noop))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(alignment::Horizontal::Center)
+                    .align_y(alignment::Vertical::Center)
+            ]
+            .into()
+        } else if self.show_close_confirmation {
+            stack![
+                app,
+                dialog::backdrop(1.0, Message::Noop),
                 container(self.close_confirmation())
                     .width(Length::Fill)
                     .height(Length::Fill)
@@ -779,29 +989,10 @@ impl Roton {
             .into()
         } else if let Some(kind) = self.selected_node {
             let progress = ease_out(self.modal_progress);
-            let has_dropdown_open = self.is_format_dropdown_open
-                || self.is_monitor_dropdown_open
-                || self.is_mic_dropdown_open;
-            let backdrop_press = if has_dropdown_open {
-                Message::DismissDropdown
-            } else {
-                Message::CloseModal
-            };
-            let modal_press = if has_dropdown_open {
-                Message::DismissDropdown
-            } else {
-                Message::Noop
-            };
             stack![
                 app,
-                mouse_area(
-                    container(Space::with_width(Length::Fill).height(Length::Fill))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .style(move |_| scrim(progress))
-                )
-                .on_press(backdrop_press),
-                container(mouse_area(self.modal(kind, progress)).on_press(modal_press))
+                dialog::backdrop(progress, Message::CloseModal),
+                container(mouse_area(self.modal(kind, progress)).on_press(Message::Noop))
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .align_x(alignment::Horizontal::Center)
@@ -814,35 +1005,31 @@ impl Roton {
     }
 
     fn close_confirmation(&self) -> Element<Message> {
-        container(
+        dialog::panel(
             column![
                 text("Stop Recording?").size(18),
                 text("Roton is still recording. Closing now will stop and save the recording.")
                     .size(13),
                 row![
-                    mouse_area(
-                        container(text("Cancel").size(13))
-                            .padding([10, 14])
-                            .style(pill)
-                    )
-                    .on_press(Message::CancelClose),
+                    ui_button::text_button(
+                        "Cancel",
+                        ButtonVariant::Secondary,
+                        Some(Message::CancelClose),
+                    ),
                     Space::with_width(Length::Fill),
-                    mouse_area(
-                        container(text("Stop and Close").size(13))
-                            .padding([10, 14])
-                            .style(stop_button)
-                    )
-                    .on_press(Message::ConfirmClose),
+                    ui_button::text_button(
+                        "Stop and Close",
+                        ButtonVariant::Danger,
+                        Some(Message::ConfirmClose),
+                    ),
                 ]
                 .spacing(10)
                 .align_y(alignment::Vertical::Center),
             ]
             .spacing(16),
+            420.0,
+            1.0,
         )
-        .width(420)
-        .padding(18)
-        .style(|_| modal_panel(1.0))
-        .into()
     }
 
     fn sidebar(&self) -> Element<Message> {
@@ -942,10 +1129,11 @@ impl Roton {
         .width(Length::Fill)
         .align_y(alignment::Vertical::Center);
 
-        container(
+        let sidebar = container(
             column![
-                status_row,
+                self.workspace_selector(),
                 controls,
+                status_row,
                 Space::with_height(Length::Fill),
                 column![
                     text("Roton v1.0.0").size(12),
@@ -958,8 +1146,117 @@ impl Roton {
         .width(210)
         .height(Length::Fill)
         .padding(18)
-        .style(sidebar)
+        .style(sidebar);
+
+        sidebar.into()
+    }
+
+    fn workspace_selector(&self) -> Element<Message> {
+        let locked = self.is_config_locked();
+
+        row![
+            dropdown::select(
+                self.settings.active_workspace().name.clone(),
+                self.settings
+                    .workspaces
+                    .iter()
+                    .enumerate()
+                    .map(|(index, workspace)| {
+                        DropdownEntry::from(OptionItem::new(
+                            &workspace.name,
+                            Message::SelectWorkspace(index),
+                        ))
+                    })
+                    .chain([
+                        DropdownEntry::Separator,
+                        DropdownEntry::from(OptionItem::new(
+                            "+ New Workspace",
+                            Message::OpenCreateWorkspace,
+                        )),
+                    ]),
+                16,
+                locked,
+            ),
+            ui_button::compact_icon_button(
+                "assets/icons/ellipsis-vertical.svg",
+                ButtonVariant::Side,
+                (!locked).then_some(Message::ToggleWorkspaceActions),
+            ),
+        ]
+        .spacing(8)
+        .align_y(alignment::Vertical::Center)
         .into()
+    }
+
+    fn workspace_actions_menu(&self) -> Element<Message> {
+        let delete = if self.settings.workspaces.len() > 1 {
+            MenuItem::new("Delete", Message::DeleteWorkspace)
+        } else {
+            MenuItem::disabled("Delete")
+        };
+
+        menu::view([
+            MenuItem::new("Rename", Message::OpenRenameWorkspace),
+            delete,
+        ])
+    }
+
+    fn workspace_name_modal(&self) -> Element<Message> {
+        let is_create = self.workspace_name_action == Some(WorkspaceNameAction::Create);
+        let title = if is_create {
+            "New Workspace"
+        } else {
+            "Rename Workspace"
+        };
+        let description = if is_create {
+            "Recordings start in a dedicated folder under your Videos directory."
+        } else {
+            "Renaming keeps the existing recordings folder unchanged."
+        };
+        let confirm_label = if is_create { "Create" } else { "Rename" };
+        let error: Element<_> = self
+            .workspace_name_error
+            .as_deref()
+            .map(|error| {
+                text(error)
+                    .size(12)
+                    .color(Color::from_rgb8(232, 126, 126))
+                    .into()
+            })
+            .unwrap_or_else(|| Space::with_height(0).into());
+
+        dialog::panel(
+            column![
+                text(title).size(18),
+                text(description).size(13),
+                textbox::field(
+                    "Workspace name",
+                    &self.workspace_name,
+                    "workspace-name",
+                    Message::WorkspaceNameChanged,
+                    Message::ConfirmWorkspaceName,
+                ),
+                error,
+                row![
+                    Space::with_width(Length::Fill),
+                    ui_button::text_button(
+                        "Cancel",
+                        ButtonVariant::Secondary,
+                        Some(Message::CancelWorkspaceName),
+                    ),
+                    ui_button::text_button(
+                        confirm_label,
+                        ButtonVariant::Primary,
+                        Some(Message::ConfirmWorkspaceName),
+                    ),
+                ]
+                .spacing(8)
+                .align_y(alignment::Vertical::Center),
+            ]
+            .spacing(12),
+            420.0,
+            1.0,
+        )
     }
 
     fn titlebar(&self) -> Element<Message> {
@@ -1041,20 +1338,16 @@ impl Roton {
     }
 
     fn titlebar_menu(&self) -> Element<Message> {
-        let item = |index, label: &'static str, icon: &'static str, message| {
+        let item = |index, label: &'static str, message| {
             mouse_area(
-                container(
-                    row![image(icon).width(15).height(15), text(label).size(13),]
-                        .spacing(10)
-                        .align_y(alignment::Vertical::Center),
-                )
-                .padding([9, 10])
-                .width(Length::Fill)
-                .style(if self.hovered_titlebar_menu_item == Some(index) {
-                    titlebar_menu_item_hovered
-                } else {
-                    titlebar_menu_item
-                }),
+                container(text(label).size(13))
+                    .padding([9, 10])
+                    .width(Length::Fill)
+                    .style(if self.hovered_titlebar_menu_item == Some(index) {
+                        titlebar_menu_item_hovered
+                    } else {
+                        titlebar_menu_item
+                    }),
             )
             .on_enter(Message::HoverTitlebarMenuItem(Some(index)))
             .on_exit(Message::HoverTitlebarMenuItem(None))
@@ -1112,23 +1405,13 @@ impl Roton {
         mouse_area(
             container(
                 column![
-                    item(0, "Close", "assets/icons/close.png", Message::CloseWindow),
-                    item(
-                        1,
-                        "Maximize",
-                        "assets/icons/maximize.png",
-                        Message::MaximizeWindow
-                    ),
-                    item(
-                        2,
-                        "Minimize",
-                        "assets/icons/minimize.png",
-                        Message::MinimizeWindow
-                    ),
+                    item(0, "Close", Message::CloseWindow),
+                    item(1, "Maximize", Message::MaximizeWindow),
+                    item(2, "Minimize", Message::MinimizeWindow),
                     container(
                         container(Space::with_height(1))
                             .width(Length::Fill)
-                            .style(titlebar_menu_separator)
+                            .style(component_styles::separator)
                     )
                     .padding([3, 0])
                     .width(Length::Fill),
@@ -1250,29 +1533,18 @@ impl Roton {
         let body: Element<_> = match kind {
             NodeKind::Output => column![
                 text("Format").size(13),
-                self.dropdown(&self.selected_format, Message::ToggleFormatDropdown,),
+                self.dropdown(&self.selected_format, &self.formats, Message::SelectFormat),
                 text("Save Folder").size(13),
                 row![
-                    container(text(truncate_text(&self.settings.save_path, 38)).size(13))
-                        .padding(10)
-                        .width(Length::Fill)
-                        .style(input_surface),
-                    mouse_area(container(text("Choose").size(13)).padding([10, 14]).style(
-                        if self.is_config_locked() {
-                            control_disabled
-                        } else if self.is_choose_hovered {
-                            pill_hovered
-                        } else {
-                            pill
-                        }
-                    ))
-                    .on_enter(Message::HoverChoose(true))
-                    .on_exit(Message::HoverChoose(false))
-                    .on_press(if self.is_config_locked() {
-                        Message::Noop
-                    } else {
-                        Message::ChooseOutputFolder
-                    }),
+                    textbox::readonly(truncate_text(
+                        &self.settings.active_workspace().save_path,
+                        38
+                    )),
+                    ui_button::text_button(
+                        "Choose",
+                        ButtonVariant::Secondary,
+                        (!self.is_config_locked()).then_some(Message::ChooseOutputFolder),
+                    ),
                 ]
                 .spacing(8)
                 .align_y(alignment::Vertical::Center),
@@ -1283,7 +1555,8 @@ impl Roton {
                 text("Monitor").size(13),
                 self.dropdown(
                     self.selected_monitor.as_deref().unwrap_or("Select monitor"),
-                    Message::ToggleMonitorDropdown,
+                    &self.monitors,
+                    Message::SelectMonitor,
                 ),
                 self.switch_row(
                     "Show Cursor",
@@ -1307,24 +1580,15 @@ impl Roton {
                 ]
                 .spacing(10),
                 if self.screen_mode == ScreenMode::SelectArea {
-                    mouse_area(
-                        container(text("Select Area").size(13))
-                            .padding([10, 14])
-                            .width(Length::Fill)
-                            .align_x(alignment::Horizontal::Center)
-                            .style(if self.is_config_locked() {
-                                control_disabled
-                            } else {
-                                record_button
-                            }),
-                    )
-                    .on_press(if self.is_config_locked() {
-                        Message::Noop
-                    } else {
-                        Message::SelectArea
-                    })
+                    Element::<Message>::from(ui_button::fill_text_button(
+                        "Select Area",
+                        ButtonVariant::Primary,
+                        (!self.is_config_locked()).then_some(Message::SelectArea),
+                    ))
                 } else {
-                    mouse_area(container(Space::with_height(0))).on_press(Message::Noop)
+                    Element::<Message>::from(
+                        mouse_area(container(Space::with_height(0))).on_press(Message::Noop),
+                    )
                 },
             ]
             .spacing(12)
@@ -1333,7 +1597,8 @@ impl Roton {
                 text("Microphone").size(13),
                 self.dropdown(
                     self.selected_mic.as_deref().unwrap_or("Select microphone"),
-                    Message::ToggleMicDropdown,
+                    &self.mics,
+                    Message::SelectMic,
                 ),
                 self.mic_toggle_button(),
             ]
@@ -1341,7 +1606,7 @@ impl Roton {
             .into(),
         };
 
-        let panel = container(
+        dialog::panel(
             column![
                 row![
                     text(format!("{} Config", kind.title())).size(18),
@@ -1363,22 +1628,9 @@ impl Roton {
                 body,
             ]
             .spacing(18),
+            460.0,
+            progress,
         )
-        .width(460)
-        .padding(18)
-        .style(move |_| modal_panel(progress));
-
-        if let Some(menu) = self.dropdown_overlay(kind) {
-            stack![
-                panel,
-                container(column![Space::with_height(88), menu,].width(Length::Fill))
-                    .width(460)
-                    .padding([0, 18])
-            ]
-            .into()
-        } else {
-            panel.into()
-        }
     }
 
     fn screen_mode_button(&self, mode: ScreenMode) -> Element<Message> {
@@ -1545,82 +1797,20 @@ impl Roton {
         .into()
     }
 
-    fn dropdown<'a>(&'a self, selected: &'a str, toggle: Message) -> Element<'a, Message> {
-        let field = mouse_area(
-            container(
-                row![
-                    text(truncate_text(selected, 36)).size(13),
-                    Space::with_width(Length::Fill),
-                    svg("assets/icons/chevrons-up-down.svg")
-                        .width(15)
-                        .height(15),
-                ]
-                .align_y(alignment::Vertical::Center),
-            )
-            .padding(10)
-            .width(Length::Fill)
-            .style(if self.is_config_locked() {
-                input_surface_disabled
-            } else {
-                input_surface
-            }),
-        )
-        .on_press(if self.is_config_locked() {
-            Message::Noop
-        } else {
-            toggle
-        });
-
-        field.into()
-    }
-
-    fn dropdown_overlay(&self, kind: NodeKind) -> Option<Element<Message>> {
-        match kind {
-            NodeKind::Output if self.is_format_dropdown_open => {
-                Some(self.dropdown_menu(&self.formats, Message::SelectFormat))
-            }
-            NodeKind::Screen if self.is_monitor_dropdown_open => {
-                Some(self.dropdown_menu(&self.monitors, Message::SelectMonitor))
-            }
-            NodeKind::Mic if self.is_mic_dropdown_open => {
-                Some(self.dropdown_menu(&self.mics, Message::SelectMic))
-            }
-            _ => None,
-        }
-    }
-
-    fn dropdown_menu<'a>(
-        &'a self,
-        options: &'a [String],
+    fn dropdown(
+        &self,
+        selected: &str,
+        options: &[String],
         on_select: fn(String) -> Message,
-    ) -> Element<'a, Message> {
-        let options =
+    ) -> Element<Message> {
+        dropdown::select(
+            selected,
             options
                 .iter()
-                .enumerate()
-                .fold(column![].spacing(0), |column, (index, option)| {
-                    column.push(
-                        mouse_area(
-                            container(text(option).size(13))
-                                .padding([9, 10])
-                                .width(Length::Fill)
-                                .style(if self.hovered_dropdown_option == Some(index) {
-                                    dropdown_option_hovered
-                                } else {
-                                    dropdown_option
-                                }),
-                        )
-                        .on_enter(Message::HoverDropdownOption(Some(index)))
-                        .on_exit(Message::HoverDropdownOption(None))
-                        .on_press(on_select(option.clone())),
-                    )
-                });
-
-        container(options)
-            .padding([4, 0])
-            .width(Length::Fill)
-            .style(dropdown_menu_surface)
-            .into()
+                .map(|option| OptionItem::new(option, on_select(option.clone())).into()),
+            36,
+            self.is_config_locked(),
+        )
     }
 }
 
@@ -1752,39 +1942,8 @@ fn titlebar_menu_item_hovered(_: &Theme) -> container::Style {
     }
 }
 
-fn titlebar_menu_separator(_: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Color::from_rgb8(74, 74, 70).into()),
-        text_color: Some(Color::TRANSPARENT),
-        border: border::rounded(1).width(0),
-        shadow: Shadow::default(),
-    }
-}
-
 fn ease_out(progress: f32) -> f32 {
     1.0 - (1.0 - progress).powi(3)
-}
-
-fn scrim(progress: f32) -> container::Style {
-    container::Style {
-        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.42 * progress).into()),
-        text_color: Some(Color::TRANSPARENT),
-        border: border::rounded(8).width(0),
-        shadow: Shadow::default(),
-    }
-}
-
-fn modal_panel(progress: f32) -> container::Style {
-    container::Style {
-        background: Some(Color::from_rgb8(42, 42, 39).into()),
-        text_color: Some(Color::from_rgb8(235, 233, 226)),
-        border: border::rounded(8).width(0),
-        shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.35 * progress),
-            offset: iced::Vector::new(0.0, 10.0 * progress),
-            blur_radius: 24.0 * progress,
-        },
-    }
 }
 
 fn record_button(_: &Theme) -> container::Style {
@@ -1864,33 +2023,6 @@ fn pause_button_blink_off(_: &Theme) -> container::Style {
         background: Some(Color::from_rgb8(112, 86, 24).into()),
         text_color: Some(Color::from_rgb8(255, 245, 210)),
         border: border::rounded(8).width(0),
-        shadow: Shadow::default(),
-    }
-}
-
-fn input_surface(_: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Color::from_rgb8(52, 52, 49).into()),
-        text_color: Some(Color::from_rgb8(214, 212, 205)),
-        border: border::rounded(7).width(0),
-        shadow: Shadow::default(),
-    }
-}
-
-fn input_surface_disabled(_: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Color::from_rgb8(45, 45, 42).into()),
-        text_color: Some(Color::from_rgb8(138, 136, 130)),
-        border: border::rounded(7).width(0),
-        shadow: Shadow::default(),
-    }
-}
-
-fn control_disabled(_: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Color::from_rgb8(43, 43, 40).into()),
-        text_color: Some(Color::from_rgb8(126, 124, 118)),
-        border: border::rounded(7).width(0),
         shadow: Shadow::default(),
     }
 }
@@ -1976,37 +2108,6 @@ fn switch_knob_disabled(_: &Theme) -> container::Style {
     }
 }
 
-fn dropdown_menu_surface(_: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Color::from_rgb8(52, 52, 49).into()),
-        text_color: Some(Color::from_rgb8(232, 230, 222)),
-        border: border::rounded(7).width(0),
-        shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.22),
-            offset: iced::Vector::new(0.0, 8.0),
-            blur_radius: 18.0,
-        },
-    }
-}
-
-fn dropdown_option(_: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Color::TRANSPARENT.into()),
-        text_color: Some(Color::from_rgb8(232, 230, 222)),
-        border: border::rounded(5).width(0),
-        shadow: Shadow::default(),
-    }
-}
-
-fn dropdown_option_hovered(_: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Color::from_rgb8(66, 66, 62).into()),
-        text_color: Some(Color::from_rgb8(246, 244, 238)),
-        border: border::rounded(5).width(0),
-        shadow: Shadow::default(),
-    }
-}
-
 fn node_card(_: &Theme) -> container::Style {
     container::Style {
         background: Some(Color::from_rgb8(45, 45, 42).into()),
@@ -2066,28 +2167,6 @@ fn ghost_card_hovered(_: &Theme) -> container::Style {
         background: Some(Color::from_rgb8(46, 46, 42).into()),
         text_color: Some(Color::from_rgb8(190, 188, 179)),
         border: border::rounded(8).width(0),
-        shadow: Shadow::default(),
-    }
-}
-
-fn pill(_: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Color::from_rgb8(43, 43, 40).into()),
-        text_color: Some(Color::from_rgb8(210, 208, 200)),
-        border: border::rounded(7)
-            .color(Color::from_rgb8(76, 75, 70))
-            .width(1),
-        shadow: Shadow::default(),
-    }
-}
-
-fn pill_hovered(_: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Color::from_rgb8(55, 55, 51).into()),
-        text_color: Some(Color::from_rgb8(226, 224, 216)),
-        border: border::rounded(7)
-            .color(Color::from_rgb8(76, 75, 70))
-            .width(1),
         shadow: Shadow::default(),
     }
 }

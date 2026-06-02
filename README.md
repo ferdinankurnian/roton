@@ -23,22 +23,34 @@ Iced rewrite of Roton, a Wayland `wl-screenrec` wrapper focused on fast screen r
 cargo run
 ```
 
+## Development
+
+Install the file watcher:
+
+```sh
+sudo pacman -S watchexec
+```
+
+Run Roton with rebuild-and-relaunch on save:
+
+```sh
+make dev
+```
+
 ## Runtime Tools
 
-Install these on Arch:
+Roton needs these tools at runtime:
 
-```sh
-sudo pacman -S ffmpeg xdg-desktop-portal pipewire-pulse
-yay -S scrop-bin
-```
+- `ffmpeg`
+- `xdg-desktop-portal`
+- `pipewire-pulse`
+- `wl-screenrec`
+- `scrop`
+- `pactl`
 
-Roton also expects `wl-screenrec` and `pactl` to be available. `wl-screenrec` is commonly installed from AUR.
+Tray support also needs an AppIndicator runtime:
 
-Tray support needs an AppIndicator runtime:
-
-```sh
-sudo pacman -S libayatana-appindicator
-```
+- `libayatana-appindicator3` or `libappindicator3`
 
 ## Notes
 
