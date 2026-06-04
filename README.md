@@ -1,41 +1,59 @@
-# Roton Iced
+<img src="assets/rotonicon.png" width="100" height="100" alt="Roton Icon">
 
-Iced rewrite of Roton, a Wayland `wl-screenrec` wrapper focused on fast screen recording with a small custom UI.
+# Roton Screen Recorder
+
+Roton v1.0.0 is a fast Wayland screen recorder built with Rust and Iced. It wraps `wl-screenrec` with a small GUI so recording does not have to live in the terminal.
+
+## About
+
+I wanted a quick performance screen recorder app. Then I found `wl-screenrec`, and it was fast enough that I stopped using bigger studio apps. The only catch was that it runs from the CLI, so Roton gives it a GUI.
+
+Roton can record fullscreen, a selected monitor, or a selected area. You can choose the output format, include or hide the cursor, record screen audio, record a microphone, mute audio, pause and resume recordings, and keep the app available from the tray.
 
 ## Features
 
 - `wl-screenrec` recording backend
 - MP4, MKV, and WEBM output
-- fullscreen or `scrop` area recording
-- monitor selection
+- fullscreen, monitor, or `scrop` area recording
 - optional cursor capture
-- optional screen sound capture
+- optional screen audio capture
 - optional microphone capture
 - pause/resume by segmenting recordings and concatenating with `ffmpeg`
 - recording completion notification
-- custom titlebar with minimal-window controls
+- custom titlebar with minimal window controls
 - tray icon and optional minimize-to-tray close behavior
 - close confirmation while recording when minimize-to-tray is off
 
-## Run
+## Run This Project
 
-```sh
-cargo run
-```
+1. Install Rust by following the [getting-started guide](https://www.rust-lang.org/learn/get-started). After that, `rustc` and `cargo` should be available in your `PATH`.
+2. Install the runtime tools:
 
-## Development
+   ```sh
+   sudo pacman -S ffmpeg xdg-desktop-portal pipewire-pulse
+   yay -S scrop-bin
+   ```
 
-Install the file watcher:
+   Roton also needs `wl-screenrec` and `pactl`. Install them from your preferred Arch repo/AUR source if they are not already available.
 
-```sh
-sudo pacman -S watchexec
-```
+3. Clone this repository:
 
-Run Roton with rebuild-and-relaunch on save:
+   ```sh
+   git clone https://github.com/ferdinankurnian/roton-iced.git
+   cd roton-iced
+   ```
 
-```sh
-make dev
-```
+4. Build with `cargo`:
+
+   ```sh
+   cargo build
+   ```
+
+5. Run the application:
+
+   ```sh
+   cargo run
+   ```
 
 ## Runtime Tools
 
@@ -54,7 +72,7 @@ Tray support also needs an AppIndicator runtime:
 
 ## Notes
 
-- This build targets Wayland.
+- Roton v1.0.0 targets Wayland only.
 - Audio devices are read from `pactl list sources`.
 - Screen area selection uses `scrop`.
 - Tray support uses StatusNotifier/AppIndicator through `tray-icon`.
