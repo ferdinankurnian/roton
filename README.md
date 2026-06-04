@@ -16,7 +16,7 @@ Roton can record fullscreen, a selected monitor, or a selected area. You can cho
 
 - `wl-screenrec` recording backend
 - MP4, MKV, and WEBM output
-- fullscreen, monitor, or `scrop` area recording
+- fullscreen, monitor, or [`scrop`](https://github.com/ferdinankurnian/scrop) area recording
 - optional cursor capture
 - optional screen audio capture
 - optional microphone capture
@@ -65,7 +65,7 @@ Roton needs these tools at runtime:
 - `xdg-desktop-portal`
 - `pipewire-pulse`
 - `wl-screenrec`
-- `scrop`
+- [`scrop`](https://github.com/ferdinankurnian/scrop)
 - `pactl`
 
 Tray support also needs an AppIndicator runtime:
@@ -76,5 +76,5 @@ Tray support also needs an AppIndicator runtime:
 
 - Roton v1.0.1 targets Wayland only.
 - Audio devices are read from `pactl list sources`.
-- Screen area selection uses `scrop`.
+- Screen area selection uses [`scrop`](https://github.com/ferdinankurnian/scrop).
 - Tray support uses StatusNotifier/AppIndicator through `tray-icon`.
