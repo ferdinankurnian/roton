@@ -8,35 +8,37 @@ pub struct AudioDevice {
 }
 
 pub fn get_audio_devices() -> Vec<AudioDevice> {
-    let output = Command::new("pactl")
-        .arg("list")
-        .arg("sources")
-        .output();
+    let output = Command::new("pactl").arg("list").arg("sources").output();
 
     let mut devices = Vec::new();
 
     if let Ok(out) = output {
         if out.status.success() {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            
+
             // Simple state machine parser for pactl output
             let mut current_name = String::new();
             let mut current_desc = String::new();
             let mut current_monitor_of = String::new();
-            
+
             for line in stdout.lines() {
                 let trimmed = line.trim();
-                
+
                 if line.starts_with("Source #") {
                     // Save previous device if valid
                     if !current_name.is_empty() {
                         devices.push(AudioDevice {
                             name: current_name.clone(),
-                            description: if current_desc.is_empty() { current_name.clone() } else { current_desc.clone() },
-                            is_monitor: current_monitor_of != "n/a" && !current_monitor_of.is_empty(),
+                            description: if current_desc.is_empty() {
+                                current_name.clone()
+                            } else {
+                                current_desc.clone()
+                            },
+                            is_monitor: current_monitor_of != "n/a"
+                                && !current_monitor_of.is_empty(),
                         });
                     }
-                    
+
                     // Reset for new device
                     current_name.clear();
                     current_desc.clear();
@@ -46,15 +48,20 @@ pub fn get_audio_devices() -> Vec<AudioDevice> {
                 } else if trimmed.starts_with("Description:") {
                     current_desc = trimmed.trim_start_matches("Description: ").to_string();
                 } else if trimmed.starts_with("Monitor of Sink:") {
-                    current_monitor_of = trimmed.trim_start_matches("Monitor of Sink: ").to_string();
+                    current_monitor_of =
+                        trimmed.trim_start_matches("Monitor of Sink: ").to_string();
                 }
             }
-            
+
             // Push the last device
             if !current_name.is_empty() {
-                 devices.push(AudioDevice {
+                devices.push(AudioDevice {
                     name: current_name,
-                    description: if current_desc.is_empty() { "Unknown Device".to_string() } else { current_desc },
+                    description: if current_desc.is_empty() {
+                        "Unknown Device".to_string()
+                    } else {
+                        current_desc
+                    },
                     is_monitor: current_monitor_of != "n/a" && !current_monitor_of.is_empty(),
                 });
             }

@@ -1,36 +1,78 @@
 <img src="assets/rotonicon.png" width="100" height="100" alt="Roton Icon">
 
-
 # Roton Screen Recorder
 
-Roton is a `wl-screenrec` wrapper, it's a screen recorder app and use `rust` language.
+Roton v1.0.0 is a fast Wayland screen recorder built with Rust and Iced. It wraps `wl-screenrec` with a small GUI so recording does not have to live in the terminal.
 
 ## About
 
-I want a quick performance screen recorder app. And then I found `wl-screenrec`, it is so fast that i uninstall that studio app. but it's run on cli, so i want a GUI for it. 
+I wanted a quick performance screen recorder app. Then I found `wl-screenrec`, and it was fast enough that I stopped using bigger studio apps. The only catch was that it runs from the CLI, so Roton gives it a GUI.
 
-So I make this app. This app can record either fullscreen or select area. You can adjust the audio source too, like mute, screen, audio, or both.
+Roton can record fullscreen, a selected monitor, or a selected area. You can choose the output format, include or hide the cursor, record screen audio, record a microphone, mute audio, pause and resume recordings, and keep the app available from the tray.
 
-## Run this project
+## Features
 
-1. Install Rust by following its [getting-started guide](https://www.rust-lang.org/learn/get-started).
-   Once this is done, you should have the `rustc` compiler and the `cargo` build system installed in your `PATH`.
-2. Clone this repository:
-    ```
-    git clone https://github.com/ferdinankurnian/roton.git
-    cd roton
-    ```
-3. Build with `cargo`:
-    ```
-    cargo build
-    ```
-4. Run the application binary:
-    ```
-    cargo run
-    ```
+- `wl-screenrec` recording backend
+- MP4, MKV, and WEBM output
+- fullscreen, monitor, or `scrop` area recording
+- optional cursor capture
+- optional screen audio capture
+- optional microphone capture
+- pause/resume by segmenting recordings and concatenating with `ffmpeg`
+- recording completion notification
+- custom titlebar with minimal window controls
+- tray icon and optional minimize-to-tray close behavior
+- close confirmation while recording when minimize-to-tray is off
 
-## Note
+## Run This Project
 
-Btw, this app use dependencies like `slurp`, `ffmpeg`, `pactl`, and ofc `wl-screenrec`. 
+1. Install Rust by following the [getting-started guide](https://www.rust-lang.org/learn/get-started). After that, `rustc` and `cargo` should be available in your `PATH`.
+2. Install the runtime tools:
 
-And hey, this is for wayland only.
+   ```sh
+   sudo pacman -S ffmpeg xdg-desktop-portal pipewire-pulse
+   yay -S scrop-bin
+   ```
+
+   Roton also needs `wl-screenrec` and `pactl`. Install them from your preferred Arch repo/AUR source if they are not already available.
+
+3. Clone this repository:
+
+   ```sh
+   git clone https://github.com/ferdinankurnian/roton-iced.git
+   cd roton-iced
+   ```
+
+4. Build with `cargo`:
+
+   ```sh
+   cargo build
+   ```
+
+5. Run the application:
+
+   ```sh
+   cargo run
+   ```
+
+## Runtime Tools
+
+Roton needs these tools at runtime:
+
+- `ffmpeg`
+- `xdg-desktop-portal`
+- `pipewire-pulse`
+- `wl-screenrec`
+- `scrop`
+- `pactl`
+
+Tray support also needs an AppIndicator runtime:
+
+- `libayatana-appindicator3` or `libappindicator3`
+
+## Notes
+
+- Roton v1.0.0 targets Wayland only.
+- Audio devices are read from `pactl list sources`.
+- Screen area selection uses `scrop`.
+- Tray support uses StatusNotifier/AppIndicator through `tray-icon`.

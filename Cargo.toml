@@ -1,19 +1,16 @@
 [package]
-name = "roton"
-version = "0.1.0"
+name = "roton-iced"
+version = "1.0.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-display-info = "0.5.7"
-dotenv = "0.15.0"
-slint = "1.14.1"
-rfd = { version = "0.15", features = ["xdg-portal"] }
 chrono = "0.4"
 directories = "5.0"
+display-info = "0.5.7"
+iced = { version = "0.13", features = ["advanced", "image", "svg", "tokio"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+notify-rust = "4.11"
+rfd = { version = "0.15", features = ["xdg-portal"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.147"
-
-[build-dependencies]
-slint-build = "1.14.1"
+tray-icon = { version = "0.24", default-features = false, features = ["gtk"] }

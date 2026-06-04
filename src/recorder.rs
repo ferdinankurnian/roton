@@ -1,6 +1,6 @@
-use std::process::{Child, Command, Stdio};
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 
 #[derive(Clone)]
 struct RecordingConfig {
@@ -9,6 +9,8 @@ struct RecordingConfig {
     mic_device: Option<String>,
     monitor_device: Option<String>,
     final_path: String,
+    output: Option<String>,
+    show_cursor: bool,
 }
 
 pub struct Recorder {
@@ -21,7 +23,7 @@ pub struct Recorder {
 
 impl Recorder {
     pub fn new() -> Self {
-        Self { 
+        Self {
             process: None,
             pulse_modules: Vec::new(),
             config: None,
@@ -63,10 +65,7 @@ impl Recorder {
 
     fn unload_pulse_modules(&mut self) {
         for id in &self.pulse_modules {
-            let _ = Command::new("pactl")
-                .arg("unload-module")
-                .arg(id)
-                .status();
+            let _ = Command::new("pactl").arg("unload-module").arg(id).status();
         }
         self.pulse_modules.clear();
     }
@@ -76,7 +75,13 @@ impl Recorder {
         if let Some(config) = &self.config {
             // Generate temp file path in system temp dir
             let timestamp = chrono::Local::now().format("%H-%M-%S-%f");
-            let temp_file = std::env::temp_dir().join(format!("roton_seg_{}.mp4", timestamp));
+            let extension = PathBuf::from(&config.final_path)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or("mp4")
+                .to_string();
+            let temp_file =
+                std::env::temp_dir().join(format!("roton_seg_{}.{}", timestamp, extension));
             let temp_path_str = temp_file.to_str().unwrap().to_string();
 
             let mut cmd = Command::new("wl-screenrec");
@@ -84,6 +89,12 @@ impl Recorder {
 
             if let Some(geo) = &config.geometry {
                 cmd.arg("-g").arg(geo);
+            } else if let Some(output) = &config.output {
+                cmd.arg("-o").arg(output);
+            }
+
+            if !config.show_cursor {
+                cmd.arg("--no-cursor");
             }
 
             match config.audio_mode.as_str() {
@@ -100,11 +111,11 @@ impl Recorder {
                     }
                 }
                 "Both" => {
-                    // Use the ALREADY created virtual mixer if possible, 
+                    // Use the ALREADY created virtual mixer if possible,
                     // or rely on the mixer created at start_session.
                     // Since modules are persistent in `pulse_modules`, we just point to the sink monitor.
-                     cmd.arg("--audio");
-                     cmd.arg("--audio-device").arg("RotonMixer.monitor");
+                    cmd.arg("--audio");
+                    cmd.arg("--audio-device").arg("RotonMixer.monitor");
                 }
                 _ => {}
             }
@@ -126,14 +137,27 @@ impl Recorder {
     fn stop_current_process(&mut self) {
         if let Some(mut child) = self.process.take() {
             let pid = child.id();
-            let _ = Command::new("kill").arg("-s").arg("INT").arg(pid.to_string()).status();
+            let _ = Command::new("kill")
+                .arg("-s")
+                .arg("INT")
+                .arg(pid.to_string())
+                .status();
             let _ = child.wait();
         }
     }
 
     // Public API
 
-    pub fn start_session(&mut self, final_path: &str, geometry: Option<&str>, audio_mode: &str, mic: Option<&str>, monitor: Option<&str>) -> Result<(), String> {
+    pub fn start_session(
+        &mut self,
+        final_path: &str,
+        geometry: Option<&str>,
+        audio_mode: &str,
+        mic: Option<&str>,
+        monitor: Option<&str>,
+        output: Option<&str>,
+        show_cursor: bool,
+    ) -> Result<(), String> {
         // Clear previous session state
         self.stop_current_process();
         self.unload_pulse_modules();
@@ -142,12 +166,26 @@ impl Recorder {
 
         // Setup PulseAudio mixer if needed for "Both"
         if audio_mode == "Both" {
-             if let (Some(m), Some(mon)) = (mic, monitor) {
+            if let (Some(m), Some(mon)) = (mic, monitor) {
                 // Setup Mixer
-                self.load_pulse_module(&["module-null-sink", "sink_name=RotonMixer", "sink_properties=device.description=RotonMixer"]);
-                self.load_pulse_module(&["module-loopback", "sink=RotonMixer", &format!("source={}", m), "latency_msec=1"]);
-                self.load_pulse_module(&["module-loopback", "sink=RotonMixer", &format!("source={}", mon), "latency_msec=1"]);
-             }
+                self.load_pulse_module(&[
+                    "module-null-sink",
+                    "sink_name=RotonMixer",
+                    "sink_properties=device.description=RotonMixer",
+                ]);
+                self.load_pulse_module(&[
+                    "module-loopback",
+                    "sink=RotonMixer",
+                    &format!("source={}", m),
+                    "latency_msec=1",
+                ]);
+                self.load_pulse_module(&[
+                    "module-loopback",
+                    "sink=RotonMixer",
+                    &format!("source={}", mon),
+                    "latency_msec=1",
+                ]);
+            }
         }
 
         // Save Config
@@ -157,6 +195,8 @@ impl Recorder {
             mic_device: mic.map(|s| s.to_string()),
             monitor_device: monitor.map(|s| s.to_string()),
             final_path: final_path.to_string(),
+            output: output.map(|s| s.to_string()),
+            show_cursor,
         });
 
         // Start first segment
@@ -200,7 +240,8 @@ impl Recorder {
         if self.temp_segments.len() == 1 {
             // Try rename first, fallback to copy if cross-device (tmpfs to disk)
             if let Err(e) = fs::rename(&self.temp_segments[0], &final_path) {
-                if e.raw_os_error() == Some(18) { // EXDEV: Invalid cross-device link
+                if e.raw_os_error() == Some(18) {
+                    // EXDEV: Invalid cross-device link
                     fs::copy(&self.temp_segments[0], &final_path).map_err(|e| e.to_string())?;
                     fs::remove_file(&self.temp_segments[0]).map_err(|e| e.to_string())?;
                 } else {
@@ -213,17 +254,21 @@ impl Recorder {
             let list_path = std::env::temp_dir().join("roton_concat_list.txt");
             let mut list_content = String::new();
             for path in &self.temp_segments {
-                 list_content.push_str(&format!("file '{}'\n", path.to_str().unwrap()));
+                list_content.push_str(&format!("file '{}'\n", path.to_str().unwrap()));
             }
             fs::write(&list_path, list_content).map_err(|e| e.to_string())?;
 
             // 2. Run FFMPEG Concat
             println!("Concatenating to: {}", final_path);
             let status = Command::new("ffmpeg")
-                .arg("-f").arg("concat")
-                .arg("-safe").arg("0")
-                .arg("-i").arg(&list_path)
-                .arg("-c").arg("copy")
+                .arg("-f")
+                .arg("concat")
+                .arg("-safe")
+                .arg("0")
+                .arg("-i")
+                .arg(&list_path)
+                .arg("-c")
+                .arg("copy")
                 .arg("-y") // overwrite
                 .arg(&final_path)
                 .stdout(Stdio::null())
@@ -243,7 +288,7 @@ impl Recorder {
         for path in &self.temp_segments {
             let _ = fs::remove_file(path);
         }
-        
+
         self.config = None;
         self.temp_segments.clear();
 
