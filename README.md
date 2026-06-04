@@ -2,9 +2,9 @@
 
 # Roton Screen Recorder
 
-Roton v1.0.1 is a fast Wayland screen recorder built with Rust and Iced. It wraps `wl-screenrec` with a small GUI so recording does not have to live in the terminal.
+Roton is a fast Wayland screen recorder built with Rust and Iced. It wraps `wl-screenrec` with a small GUI so recording does not have to live in the terminal.
 
-![Roton v1.0.1 window screenshot](assets/screenshot-window.png)
+![Roton window screenshot](assets/screenshot-window.png)
 
 ## About
 
@@ -74,7 +74,7 @@ Tray support also needs an AppIndicator runtime:
 
 ## Notes
 
-- Roton v1.0.1 targets Wayland only.
+- Roton targets Wayland only.
 - Audio devices are read from `pactl list sources`.
 - Screen area selection uses [`scrop`](https://github.com/ferdinankurnian/scrop).
 - Tray support uses StatusNotifier/AppIndicator through `tray-icon`.
