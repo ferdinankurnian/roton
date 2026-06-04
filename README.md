@@ -6,8 +6,6 @@ Roton v1.0.1 is a fast Wayland screen recorder built with Rust and Iced. It wrap
 
 ![Roton v1.0.1 window screenshot](assets/screenshot-window.png)
 
-![Roton v1.0.0 window screenshot](assets/screenshot-window.png)
-
 ## About
 
 I wanted a quick performance screen recorder app. Then I found `wl-screenrec`, and it was fast enough that I stopped using bigger studio apps. The only catch was that it runs from the CLI, so Roton gives it a GUI.
