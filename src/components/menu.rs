@@ -1,6 +1,6 @@
 use super::{overlay::event_blocker, styles};
 use iced::widget::{button, column, container, text};
-use iced::{Element, Length};
+use iced::{alignment, Element, Length};
 
 pub struct Item<'a, Message> {
     label: &'a str,
@@ -36,15 +36,22 @@ pub fn view<'a, Message: Clone + 'a>(
         container(items)
             .padding([4, 0])
             .width(Length::Fill)
-            .style(styles::context_menu),
+            .style(|_| styles::context_menu_with_palette(styles::Palette::default())),
     )
 }
 
 fn menu_item<'a, Message: Clone + 'a>(item: Item<'a, Message>) -> Element<'a, Message> {
-    button(text(item.label).size(13))
+    button(
+        text(item.label)
+            .size(13)
+            .width(Length::Fill)
+            .align_x(alignment::Horizontal::Left),
+    )
         .padding([9, 10])
         .width(Length::Fill)
-        .style(styles::context_menu_option)
+        .style(|_, status| {
+            styles::context_menu_option_with_palette(status, styles::Palette::default())
+        })
         .on_press_maybe(item.on_press)
         .into()
 }

@@ -18,10 +18,11 @@ pub fn panel<'a, Message: 'a>(
     content: impl Into<Element<'a, Message>>,
     width: f32,
     progress: f32,
+    palette: styles::Palette,
 ) -> Element<'a, Message> {
     container(content)
         .width(width)
         .padding(18)
-        .style(move |_| styles::dialog_panel(progress))
+        .style(move |_| styles::dialog_panel_with_palette(progress, palette))
         .into()
 }

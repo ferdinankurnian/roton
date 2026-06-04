@@ -41,10 +41,12 @@ pub fn select<'a, Message: Clone + 'a>(
     entries: impl IntoIterator<Item = Entry<Message>>,
     max_chars: usize,
     disabled: bool,
+    palette: styles::Palette,
 ) -> Element<'a, Message> {
+    let selected = selected.into();
     let field = container(
         row![
-            text(truncate_text(&selected.into(), max_chars)).size(13),
+            text(truncate_text(&selected, max_chars)).size(13),
             Space::with_width(Length::Fill),
             svg("assets/icons/chevrons-up-down.svg")
                 .width(15)
@@ -58,17 +60,40 @@ pub fn select<'a, Message: Clone + 'a>(
     let options = entries
         .into_iter()
         .fold(column![].spacing(0), |column, entry| match entry {
-            Entry::Option(option) => column.push(
-                button(text(option.label).size(13))
+            Entry::Option(option) => {
+                let is_selected = option.label == selected;
+                let marker: Element<_> = if is_selected {
+                    svg("assets/icons/check.svg").width(15).height(15).into()
+                } else {
+                    Space::with_width(15).height(15).into()
+                };
+
+                column.push(
+                    button(
+                        row![
+                            text(option.label).size(13),
+                            Space::with_width(Length::Fill),
+                            marker,
+                        ]
+                        .spacing(10)
+                        .align_y(alignment::Vertical::Center),
+                    )
                     .padding([9, 10])
                     .width(Length::Fill)
-                    .style(styles::dropdown_option)
+                    .style(move |_, status| {
+                        if is_selected {
+                            styles::dropdown_option_selected_with_palette(status, palette)
+                        } else {
+                            styles::dropdown_option_with_palette(status, palette)
+                        }
+                    })
                     .on_press(option.on_select),
-            ),
+                )
+            }
             Entry::Separator => column.push(
                 container(Space::with_height(1))
                     .width(Length::Fill)
-                    .style(styles::separator),
+                    .style(move |_| styles::separator_with_palette(palette)),
             ),
         });
 
@@ -77,9 +102,10 @@ pub fn select<'a, Message: Clone + 'a>(
         menu: container(options)
             .padding([4, 0])
             .width(Length::Fill)
-            .style(styles::dropdown_menu)
+            .style(move |_| styles::dropdown_menu_with_palette(palette))
             .into(),
         disabled,
+        palette,
     })
 }
 
@@ -87,6 +113,7 @@ struct Dropdown<'a, Message> {
     field: Element<'a, Message>,
     menu: Element<'a, Message>,
     disabled: bool,
+    palette: styles::Palette,
 }
 
 #[derive(Debug, Default)]
@@ -186,7 +213,7 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Dropdown<'_, Message> 
         } else {
             button::Status::Active
         };
-        let style = styles::dropdown_field(theme, status);
+        let style = styles::dropdown_field_with_palette(status, self.palette);
 
         renderer.fill_quad(
             renderer::Quad {

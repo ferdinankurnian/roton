@@ -6,13 +6,12 @@ mod recorder;
 use audio::AudioDevice;
 use components::button::{self as ui_button, Variant as ButtonVariant};
 use components::dropdown::{self, Entry as DropdownEntry, OptionItem};
-use components::menu::{self, Item as MenuItem};
 use components::overlay::event_blocker;
 use components::{dialog, styles as component_styles, textbox};
 use config::{Settings, Workspace};
 use display_info::DisplayInfo;
 use iced::widget::{
-    column, container, image, mouse_area, row, stack, svg, text, text_input, Space,
+    button, column, container, image, mouse_area, row, stack, svg, text, text_input, Space,
 };
 use iced::{
     alignment, application, border, time, window, Color, Element, Length, Padding, Shadow,
@@ -33,6 +32,8 @@ const NODE_ROW_SPACING: f32 = 24.0;
 const NODE_COLUMN_SPACING: f32 = 52.0;
 const GRAPH_WIDTH: f32 = (NODE_CARD_WIDTH * 2.0) + NODE_ROW_SPACING;
 const GRAPH_HEIGHT: f32 = (NODE_CARD_HEIGHT * 2.0) + NODE_COLUMN_SPACING;
+const WORKSPACE_ACTIONS_MENU_LEFT: f32 = 154.0;
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> iced::Result {
     application("roton", Roton::update, Roton::view)
@@ -77,6 +78,198 @@ enum WorkspaceNameAction {
     Rename,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceTheme {
+    Blue,
+    Green,
+    Red,
+    Purple,
+    Amber,
+}
+
+impl WorkspaceTheme {
+    const ALL: [Self; 5] = [
+        Self::Blue,
+        Self::Green,
+        Self::Red,
+        Self::Purple,
+        Self::Amber,
+    ];
+
+    fn from_key(key: &str) -> Self {
+        match key {
+            "Green" => Self::Green,
+            "Red" => Self::Red,
+            "Purple" => Self::Purple,
+            "Amber" => Self::Amber,
+            _ => Self::Blue,
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Blue => "Blue",
+            Self::Green => "Green",
+            Self::Red => "Red",
+            Self::Purple => "Purple",
+            Self::Amber => "Amber",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        self.key()
+    }
+
+    fn accent(self) -> Color {
+        match self {
+            Self::Blue => Color::from_rgb8(47, 94, 158),
+            Self::Green => Color::from_rgb8(52, 132, 87),
+            Self::Red => Color::from_rgb8(154, 58, 63),
+            Self::Purple => Color::from_rgb8(118, 82, 168),
+            Self::Amber => Color::from_rgb8(154, 106, 35),
+        }
+    }
+
+    fn accent_hover(self) -> Color {
+        match self {
+            Self::Blue => Color::from_rgb8(37, 79, 138),
+            Self::Green => Color::from_rgb8(39, 108, 69),
+            Self::Red => Color::from_rgb8(128, 47, 52),
+            Self::Purple => Color::from_rgb8(98, 66, 144),
+            Self::Amber => Color::from_rgb8(128, 87, 25),
+        }
+    }
+
+    fn selected_surface(self) -> Color {
+        match self {
+            Self::Blue => Color::from_rgb8(58, 63, 68),
+            Self::Green => Color::from_rgb8(56, 72, 62),
+            Self::Red => Color::from_rgb8(77, 56, 58),
+            Self::Purple => Color::from_rgb8(68, 59, 82),
+            Self::Amber => Color::from_rgb8(77, 67, 51),
+        }
+    }
+
+    fn app_background(self) -> Color {
+        match self {
+            Self::Blue => Color::from_rgb8(39, 39, 37),
+            Self::Green => Color::from_rgb8(37, 41, 37),
+            Self::Red => Color::from_rgb8(41, 37, 37),
+            Self::Purple => Color::from_rgb8(39, 37, 41),
+            Self::Amber => Color::from_rgb8(41, 39, 35),
+        }
+    }
+
+    fn sidebar_background(self) -> Color {
+        match self {
+            Self::Blue => Color::from_rgb8(36, 36, 34),
+            Self::Green => Color::from_rgb8(34, 38, 34),
+            Self::Red => Color::from_rgb8(38, 34, 34),
+            Self::Purple => Color::from_rgb8(36, 34, 38),
+            Self::Amber => Color::from_rgb8(38, 36, 32),
+        }
+    }
+
+    fn titlebar_background(self) -> Color {
+        match self {
+            Self::Blue => Color::from_rgb8(35, 35, 33),
+            Self::Green => Color::from_rgb8(33, 37, 33),
+            Self::Red => Color::from_rgb8(37, 33, 33),
+            Self::Purple => Color::from_rgb8(35, 33, 37),
+            Self::Amber => Color::from_rgb8(37, 35, 31),
+        }
+    }
+
+    fn surface(self) -> Color {
+        match self {
+            Self::Blue => Color::from_rgb8(50, 50, 47),
+            Self::Green => Color::from_rgb8(48, 53, 48),
+            Self::Red => Color::from_rgb8(53, 48, 48),
+            Self::Purple => Color::from_rgb8(51, 48, 55),
+            Self::Amber => Color::from_rgb8(53, 51, 45),
+        }
+    }
+
+    fn surface_hover(self) -> Color {
+        match self {
+            Self::Blue => Color::from_rgb8(57, 57, 53),
+            Self::Green => Color::from_rgb8(55, 61, 55),
+            Self::Red => Color::from_rgb8(62, 55, 55),
+            Self::Purple => Color::from_rgb8(59, 55, 64),
+            Self::Amber => Color::from_rgb8(62, 59, 52),
+        }
+    }
+
+    fn component_palette(self) -> component_styles::Palette {
+        component_styles::Palette {
+            panel: self.dialog_surface(),
+            field: self.surface(),
+            field_hover: self.surface_hover(),
+            field_disabled: self.disabled_surface(),
+            menu: self.surface(),
+            option_hover: self.surface_hover(),
+            option_selected: self.selected_surface(),
+            option_selected_hover: self.selected_surface_hover(),
+            separator: self.separator(),
+            text: Color::from_rgb8(214, 212, 205),
+            text_strong: Color::from_rgb8(246, 244, 238),
+            text_muted: Color::from_rgb8(176, 174, 166),
+            text_disabled: Color::from_rgb8(126, 124, 118),
+            selection: self.accent(),
+        }
+    }
+
+    fn dialog_surface(self) -> Color {
+        match self {
+            Self::Blue => Color::from_rgb8(42, 42, 39),
+            Self::Green => Color::from_rgb8(39, 46, 40),
+            Self::Red => Color::from_rgb8(46, 39, 39),
+            Self::Purple => Color::from_rgb8(42, 39, 47),
+            Self::Amber => Color::from_rgb8(47, 43, 36),
+        }
+    }
+
+    fn disabled_surface(self) -> Color {
+        match self {
+            Self::Blue => Color::from_rgb8(45, 45, 42),
+            Self::Green => Color::from_rgb8(42, 47, 42),
+            Self::Red => Color::from_rgb8(47, 42, 42),
+            Self::Purple => Color::from_rgb8(45, 42, 49),
+            Self::Amber => Color::from_rgb8(48, 45, 39),
+        }
+    }
+
+    fn selected_surface_hover(self) -> Color {
+        match self {
+            Self::Blue => Color::from_rgb8(67, 74, 82),
+            Self::Green => Color::from_rgb8(65, 84, 70),
+            Self::Red => Color::from_rgb8(88, 65, 67),
+            Self::Purple => Color::from_rgb8(78, 68, 94),
+            Self::Amber => Color::from_rgb8(88, 76, 58),
+        }
+    }
+
+    fn separator(self) -> Color {
+        match self {
+            Self::Blue => Color::from_rgb8(74, 74, 70),
+            Self::Green => Color::from_rgb8(68, 82, 70),
+            Self::Red => Color::from_rgb8(86, 68, 68),
+            Self::Purple => Color::from_rgb8(76, 68, 88),
+            Self::Amber => Color::from_rgb8(84, 76, 61),
+        }
+    }
+
+    fn connector_hex(self) -> &'static str {
+        match self {
+            Self::Blue => "#8fbcff",
+            Self::Green => "#8fe0ac",
+            Self::Red => "#ff9b9f",
+            Self::Purple => "#c3a2ff",
+            Self::Amber => "#ffd188",
+        }
+    }
+}
+
 impl AudioMode {
     fn label(self) -> &'static str {
         match self {
@@ -118,6 +311,8 @@ enum Message {
     ToggleTitlebarMenu,
     HoverTitlebarMenuItem(Option<usize>),
     HoverTitlebarAction(Option<TitlebarAction>),
+    OpenAboutRoton,
+    CloseAboutRoton,
     ToggleMinimalWindow,
     ToggleMinimizeToTray,
     ConfirmClose,
@@ -148,6 +343,7 @@ enum Message {
     OutputFolderChosen(Option<String>),
     ToggleWorkspaceActions,
     SelectWorkspace(usize),
+    SelectWorkspaceTheme(WorkspaceTheme),
     OpenCreateWorkspace,
     OpenRenameWorkspace,
     DeleteWorkspace,
@@ -167,6 +363,7 @@ enum TitlebarAction {
 struct Roton {
     recorder: Arc<Mutex<Recorder>>,
     settings: Settings,
+    workspace_theme: WorkspaceTheme,
     is_workspace_actions_open: bool,
     workspace_name_action: Option<WorkspaceNameAction>,
     workspace_name: String,
@@ -189,7 +386,9 @@ struct Roton {
     is_titlebar_menu_open: bool,
     hovered_titlebar_menu_item: Option<usize>,
     hovered_titlebar_action: Option<TitlebarAction>,
+    is_window_maximized: bool,
     is_minimal_window: bool,
+    show_about_dialog: bool,
     show_close_confirmation: bool,
     is_modal_close_hovered: bool,
     is_record_hovered: bool,
@@ -215,6 +414,7 @@ impl Roton {
         let mut app = Self {
             recorder: Arc::new(Mutex::new(Recorder::new())),
             settings: Settings::load(),
+            workspace_theme: WorkspaceTheme::Blue,
             is_workspace_actions_open: false,
             workspace_name_action: None,
             workspace_name: String::new(),
@@ -237,7 +437,9 @@ impl Roton {
             is_titlebar_menu_open: false,
             hovered_titlebar_menu_item: None,
             hovered_titlebar_action: None,
+            is_window_maximized: false,
             is_minimal_window: false,
+            show_about_dialog: false,
             show_close_confirmation: false,
             is_modal_close_hovered: false,
             is_record_hovered: false,
@@ -328,6 +530,7 @@ impl Roton {
                 });
             }
             Message::SetWindowMaximized(maximized) => {
+                self.is_window_maximized = maximized;
                 return window::get_latest().and_then(move |id| window::maximize(id, maximized));
             }
             Message::MinimizeWindow => {
@@ -364,6 +567,16 @@ impl Roton {
             }
             Message::HoverTitlebarAction(action) => {
                 self.hovered_titlebar_action = action;
+            }
+            Message::OpenAboutRoton => {
+                self.is_titlebar_menu_open = false;
+                self.hovered_titlebar_menu_item = None;
+                self.show_about_dialog = true;
+                self.is_modal_close_hovered = false;
+            }
+            Message::CloseAboutRoton => {
+                self.show_about_dialog = false;
+                self.is_modal_close_hovered = false;
             }
             Message::ToggleMinimalWindow => {
                 self.is_titlebar_menu_open = false;
@@ -550,6 +763,13 @@ impl Roton {
                 self.close_workspace_menus();
                 self.save_settings();
             }
+            Message::SelectWorkspaceTheme(theme) => {
+                if self.is_config_locked() {
+                    return Task::none();
+                }
+                self.workspace_theme = theme;
+                self.persist_workspace_state();
+            }
             Message::OpenCreateWorkspace => {
                 if self.is_config_locked() {
                     return Task::none();
@@ -625,6 +845,7 @@ impl Roton {
         self.selected_area = workspace.selected_area;
         self.show_cursor = workspace.show_cursor;
         self.record_screen_sound = workspace.record_screen_sound;
+        self.workspace_theme = WorkspaceTheme::from_key(&workspace.theme);
     }
 
     fn persist_workspace_state(&mut self) {
@@ -645,6 +866,7 @@ impl Roton {
         workspace.selected_area = self.selected_area.clone();
         workspace.show_cursor = self.show_cursor;
         workspace.record_screen_sound = self.record_screen_sound;
+        workspace.theme = self.workspace_theme.key().to_string();
         self.save_settings();
     }
 
@@ -721,8 +943,12 @@ impl Roton {
         duplicate.then(|| "A workspace with that name already exists.".to_string())
     }
 
+    fn can_delete_active_workspace(&self) -> bool {
+        self.settings.workspaces.len() > 1 && self.settings.active_workspace != 0
+    }
+
     fn delete_active_workspace(&mut self) {
-        if self.settings.workspaces.len() <= 1 {
+        if !self.can_delete_active_workspace() {
             self.close_workspace_menus();
             return;
         }
@@ -915,7 +1141,10 @@ impl Roton {
         let app = container(column![self.titlebar(), content].height(Length::Fill))
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(panel);
+            .style({
+                let theme = self.workspace_theme;
+                move |_| panel(theme)
+            });
 
         let app: Element<_> = if self.is_titlebar_menu_open {
             stack![
@@ -951,14 +1180,12 @@ impl Roton {
                     )
                     .on_press(Message::ToggleWorkspaceActions)
                 ),
-                container(column![
-                    Space::with_height(98),
-                    container(self.workspace_actions_menu()).width(118),
-                ])
-                .width(210)
-                .height(Length::Fill)
-                .padding([0, 18])
-                .align_x(alignment::Horizontal::Right)
+                container(container(self.workspace_actions_menu()).width(172))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(Padding::default().top(98).left(WORKSPACE_ACTIONS_MENU_LEFT))
+                    .align_x(alignment::Horizontal::Left)
+                    .align_y(alignment::Vertical::Top)
             ]
             .into()
         } else {
@@ -987,6 +1214,17 @@ impl Roton {
                     .align_y(alignment::Vertical::Center)
             ]
             .into()
+        } else if self.show_about_dialog {
+            stack![
+                app,
+                dialog::backdrop(1.0, Message::CloseAboutRoton),
+                container(mouse_area(self.about_dialog()).on_press(Message::Noop))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(alignment::Horizontal::Center)
+                    .align_y(alignment::Vertical::Center)
+            ]
+            .into()
         } else if let Some(kind) = self.selected_node {
             let progress = ease_out(self.modal_progress);
             stack![
@@ -1005,22 +1243,26 @@ impl Roton {
     }
 
     fn close_confirmation(&self) -> Element<Message> {
+        let palette = self.workspace_theme.component_palette();
+
         dialog::panel(
             column![
                 text("Stop Recording?").size(18),
                 text("Roton is still recording. Closing now will stop and save the recording.")
                     .size(13),
                 row![
-                    ui_button::text_button(
+                    ui_button::themed_text_button(
                         "Cancel",
                         ButtonVariant::Secondary,
                         Some(Message::CancelClose),
+                        palette,
                     ),
                     Space::with_width(Length::Fill),
-                    ui_button::text_button(
+                    ui_button::themed_text_button(
                         "Stop and Close",
                         ButtonVariant::Danger,
                         Some(Message::ConfirmClose),
+                        palette,
                     ),
                 ]
                 .spacing(10)
@@ -1029,6 +1271,83 @@ impl Roton {
             .spacing(16),
             420.0,
             1.0,
+            palette,
+        )
+    }
+
+    fn about_dialog(&self) -> Element<Message> {
+        let theme = self.workspace_theme;
+        let palette = theme.component_palette();
+        let close_style = {
+            let is_hovered = self.is_modal_close_hovered;
+            move |iced_theme: &Theme| {
+                if is_hovered {
+                    ghost_card_hovered(theme)
+                } else {
+                    ghost_card(iced_theme, theme)
+                }
+            }
+        };
+        let detail_row = |label: &'static str, value: &'static str| {
+            row![
+                text(label).size(12).color(palette.text_muted),
+                Space::with_width(Length::Fill),
+                text(value).size(12).color(palette.text),
+            ]
+            .align_y(alignment::Vertical::Center)
+        };
+
+        dialog::panel(
+            column![
+                row![
+                    image("assets/rotonicon.png").width(44).height(44),
+                    column![
+                        text("Roton").size(21),
+                        text("Screen recorder").size(12).color(palette.text_muted),
+                    ]
+                    .spacing(4),
+                    Space::with_width(Length::Fill),
+                    mouse_area(
+                        container(svg("assets/icons/x.svg").width(16).height(16))
+                            .padding(8)
+                            .style(close_style)
+                    )
+                    .on_enter(Message::HoverModalClose(true))
+                    .on_exit(Message::HoverModalClose(false))
+                    .on_press(Message::CloseAboutRoton),
+                ]
+                .spacing(12)
+                .align_y(alignment::Vertical::Center),
+                container(
+                    container(Space::with_height(1))
+                        .width(Length::Fill)
+                        .style(move |_| component_styles::separator_with_palette(palette))
+                )
+                .padding([2, 0])
+                .width(Length::Fill),
+                column![
+                    detail_row("Version", APP_VERSION),
+                    detail_row("Made by", "Ferdinan Iydheko"),
+                ]
+                .spacing(9),
+                text("Built for quick workspace-based screen recording with monitor, area, cursor, screen-audio, and microphone controls.")
+                    .size(12)
+                    .color(palette.text_muted),
+                row![
+                    Space::with_width(Length::Fill),
+                    ui_button::themed_text_button(
+                        "Close",
+                        ButtonVariant::Secondary,
+                        Some(Message::CloseAboutRoton),
+                        palette,
+                    ),
+                ]
+                .align_y(alignment::Vertical::Center),
+            ]
+            .spacing(14),
+            430.0,
+            1.0,
+            palette,
         )
     }
 
@@ -1046,6 +1365,9 @@ impl Roton {
         } else {
             "assets/icons/record.svg"
         };
+        let record_theme = self.workspace_theme;
+        let is_recording = self.is_recording;
+        let is_record_hovered = self.is_record_hovered;
         let record_button = mouse_area(
             container(
                 row![
@@ -1058,16 +1380,18 @@ impl Roton {
             .padding([10, 28])
             .width(Length::Fill)
             .align_x(alignment::Horizontal::Center)
-            .style(if self.is_recording {
-                if self.is_record_hovered {
-                    stop_button_hovered
+            .style(move |iced_theme| {
+                if is_recording {
+                    if is_record_hovered {
+                        stop_button_hovered(iced_theme)
+                    } else {
+                        stop_button(iced_theme)
+                    }
+                } else if is_record_hovered {
+                    record_button_hovered(record_theme)
                 } else {
-                    stop_button
+                    record_button(record_theme)
                 }
-            } else if self.is_record_hovered {
-                record_button_hovered
-            } else {
-                record_button
             }),
         )
         .on_enter(Message::HoverRecord(true))
@@ -1136,7 +1460,7 @@ impl Roton {
                 status_row,
                 Space::with_height(Length::Fill),
                 column![
-                    text("Roton v1.0.0").size(12),
+                    text(format!("Roton v{APP_VERSION}")).size(12),
                     text("By Ferdinan Iydheko").size(11),
                 ]
                 .spacing(4),
@@ -1146,7 +1470,10 @@ impl Roton {
         .width(210)
         .height(Length::Fill)
         .padding(18)
-        .style(sidebar);
+        .style({
+            let theme = self.workspace_theme;
+            move |_| sidebar(theme)
+        });
 
         sidebar.into()
     }
@@ -1176,11 +1503,13 @@ impl Roton {
                     ]),
                 16,
                 locked,
+                self.workspace_theme.component_palette(),
             ),
-            ui_button::compact_icon_button(
+            ui_button::themed_compact_icon_button(
                 "assets/icons/ellipsis-vertical.svg",
                 ButtonVariant::Side,
                 (!locked).then_some(Message::ToggleWorkspaceActions),
+                self.workspace_theme.component_palette(),
             ),
         ]
         .spacing(8)
@@ -1189,16 +1518,88 @@ impl Roton {
     }
 
     fn workspace_actions_menu(&self) -> Element<Message> {
-        let delete = if self.settings.workspaces.len() > 1 {
-            MenuItem::new("Delete", Message::DeleteWorkspace)
-        } else {
-            MenuItem::disabled("Delete")
+        let palette = self.workspace_theme.component_palette();
+        let menu_item = |label: &'static str, on_press: Option<Message>| {
+            button(
+                text(label)
+                    .size(13)
+                    .width(Length::Fill)
+                    .align_x(alignment::Horizontal::Left),
+            )
+            .padding([9, 10])
+            .width(Length::Fill)
+            .style(move |_, status| {
+                component_styles::context_menu_option_with_palette(status, palette)
+            })
+            .on_press_maybe(on_press)
         };
 
-        menu::view([
-            MenuItem::new("Rename", Message::OpenRenameWorkspace),
-            delete,
-        ])
+        let theme_swatches = WorkspaceTheme::ALL
+            .into_iter()
+            .fold(row![].spacing(7), |row, theme| {
+                row.push(self.theme_swatch(theme))
+            });
+
+        let items = column![
+            container(
+                row![
+                    text("Color Theme").size(12).color(palette.text_muted),
+                    Space::with_width(Length::Fill),
+                    text(self.workspace_theme.label())
+                        .size(12)
+                        .color(palette.text),
+                ]
+                .width(Length::Fill)
+                .align_y(alignment::Vertical::Center),
+            )
+            .padding(Padding::default().top(6).right(10).bottom(7).left(10))
+            .width(Length::Fill),
+            container(theme_swatches)
+                .padding(Padding::default().right(10).bottom(8).left(10))
+                .width(Length::Fill),
+            container(
+                container(Space::with_height(1))
+                    .width(Length::Fill)
+                    .style(move |_| component_styles::separator_with_palette(palette))
+            )
+            .padding([3, 0])
+            .width(Length::Fill),
+            menu_item("Rename", Some(Message::OpenRenameWorkspace)),
+        ]
+        .spacing(0);
+
+        let items = if self.can_delete_active_workspace() {
+            items.push(menu_item("Delete", Some(Message::DeleteWorkspace)))
+        } else {
+            items
+        };
+
+        event_blocker(
+            container(items)
+                .padding([4, 0])
+                .width(Length::Fill)
+                .style(move |_| component_styles::context_menu_with_palette(palette)),
+        )
+    }
+
+    fn theme_swatch(&self, theme: WorkspaceTheme) -> Element<'_, Message> {
+        let is_selected = self.workspace_theme == theme;
+        let marker: Element<_> = if is_selected {
+            svg("assets/icons/check.svg").width(13).height(13).into()
+        } else {
+            Space::with_width(13).height(13).into()
+        };
+
+        mouse_area(
+            container(marker)
+                .width(24)
+                .height(24)
+                .align_x(alignment::Horizontal::Center)
+                .align_y(alignment::Vertical::Center)
+                .style(move |_| theme_swatch_style(theme, is_selected)),
+        )
+        .on_press(Message::SelectWorkspaceTheme(theme))
+        .into()
     }
 
     fn workspace_name_modal(&self) -> Element<Message> {
@@ -1235,19 +1636,22 @@ impl Roton {
                     "workspace-name",
                     Message::WorkspaceNameChanged,
                     Message::ConfirmWorkspaceName,
+                    self.workspace_theme.component_palette(),
                 ),
                 error,
                 row![
                     Space::with_width(Length::Fill),
-                    ui_button::text_button(
+                    ui_button::themed_text_button(
                         "Cancel",
                         ButtonVariant::Secondary,
                         Some(Message::CancelWorkspaceName),
+                        self.workspace_theme.component_palette(),
                     ),
-                    ui_button::text_button(
+                    ui_button::accent_text_button(
                         confirm_label,
-                        ButtonVariant::Primary,
                         Some(Message::ConfirmWorkspaceName),
+                        self.workspace_theme.accent(),
+                        self.workspace_theme.accent_hover(),
                     ),
                 ]
                 .spacing(8)
@@ -1256,6 +1660,7 @@ impl Roton {
             .spacing(12),
             420.0,
             1.0,
+            self.workspace_theme.component_palette(),
         )
     }
 
@@ -1333,25 +1738,48 @@ impl Roton {
         )
         .width(Length::Fill)
         .padding([0, 0])
-        .style(titlebar)
+        .style({
+            let theme = self.workspace_theme;
+            move |_| titlebar(theme)
+        })
         .into()
     }
 
     fn titlebar_menu(&self) -> Element<Message> {
+        let theme = self.workspace_theme;
+        let palette = theme.component_palette();
         let item = |index, label: &'static str, message| {
             mouse_area(
-                container(text(label).size(13))
-                    .padding([9, 10])
-                    .width(Length::Fill)
-                    .style(if self.hovered_titlebar_menu_item == Some(index) {
-                        titlebar_menu_item_hovered
-                    } else {
-                        titlebar_menu_item
-                    }),
+                container(
+                    row![Space::with_width(25), text(label).size(13)]
+                        .align_y(alignment::Vertical::Center),
+                )
+                .padding([9, 10])
+                .width(Length::Fill)
+                .style({
+                    let is_hovered = self.hovered_titlebar_menu_item == Some(index);
+                    move |_| {
+                        if is_hovered {
+                            titlebar_menu_item_hovered(theme)
+                        } else {
+                            titlebar_menu_item(theme)
+                        }
+                    }
+                }),
             )
             .on_enter(Message::HoverTitlebarMenuItem(Some(index)))
             .on_exit(Message::HoverTitlebarMenuItem(None))
             .on_press(message)
+        };
+
+        let separator = || {
+            container(
+                container(Space::with_height(1))
+                    .width(Length::Fill)
+                    .style(move |_| component_styles::separator_with_palette(palette)),
+            )
+            .padding([3, 0])
+            .width(Length::Fill)
         };
 
         let minimal_marker: Element<_> = if self.is_minimal_window {
@@ -1368,10 +1796,15 @@ impl Roton {
             )
             .padding([9, 10])
             .width(Length::Fill)
-            .style(if self.hovered_titlebar_menu_item == Some(3) {
-                titlebar_menu_item_hovered
-            } else {
-                titlebar_menu_item
+            .style({
+                let is_hovered = self.hovered_titlebar_menu_item == Some(3);
+                move |_| {
+                    if is_hovered {
+                        titlebar_menu_item_hovered(theme)
+                    } else {
+                        titlebar_menu_item(theme)
+                    }
+                }
             }),
         )
         .on_enter(Message::HoverTitlebarMenuItem(Some(3)))
@@ -1392,37 +1825,44 @@ impl Roton {
             )
             .padding([9, 10])
             .width(Length::Fill)
-            .style(if self.hovered_titlebar_menu_item == Some(4) {
-                titlebar_menu_item_hovered
-            } else {
-                titlebar_menu_item
+            .style({
+                let is_hovered = self.hovered_titlebar_menu_item == Some(4);
+                move |_| {
+                    if is_hovered {
+                        titlebar_menu_item_hovered(theme)
+                    } else {
+                        titlebar_menu_item(theme)
+                    }
+                }
             }),
         )
         .on_enter(Message::HoverTitlebarMenuItem(Some(4)))
         .on_exit(Message::HoverTitlebarMenuItem(None))
         .on_press(Message::ToggleMinimizeToTray);
 
+        let maximize_label = if self.is_window_maximized {
+            "Restore"
+        } else {
+            "Maximize"
+        };
+
         mouse_area(
             container(
                 column![
                     item(0, "Close", Message::CloseWindow),
-                    item(1, "Maximize", Message::MaximizeWindow),
+                    item(1, maximize_label, Message::MaximizeWindow),
                     item(2, "Minimize", Message::MinimizeWindow),
-                    container(
-                        container(Space::with_height(1))
-                            .width(Length::Fill)
-                            .style(component_styles::separator)
-                    )
-                    .padding([3, 0])
-                    .width(Length::Fill),
+                    separator(),
                     minimal_item,
                     tray_item,
+                    separator(),
+                    item(5, "About Roton", Message::OpenAboutRoton),
                 ]
                 .spacing(0),
             )
             .padding(4)
             .width(190)
-            .style(titlebar_menu_surface),
+            .style(move |_| titlebar_menu_surface(theme)),
         )
         .on_press(Message::Noop)
         .into()
@@ -1446,7 +1886,7 @@ impl Roton {
         .height(Length::Fill);
 
         let graph = stack![
-            svg(connector_svg_handle())
+            svg(connector_svg_handle(self.workspace_theme))
                 .width(Length::Fill)
                 .height(Length::Fill),
             nodes,
@@ -1465,11 +1905,19 @@ impl Roton {
 
     fn node(&self, kind: NodeKind) -> Element<Message> {
         let detail = self.node_detail(kind);
+        let icon = if kind == NodeKind::Mic && self.mic_mode == AudioMode::Mute {
+            "assets/icons/mic-off.svg"
+        } else {
+            kind.icon()
+        };
+        let theme = self.workspace_theme;
+        let locked = self.is_config_locked();
+        let is_hovered = self.selected_node.is_none() && self.hovered_node == Some(kind);
         mouse_area(
             container(
                 container(
                     column![
-                        svg(kind.icon()).width(26).height(26),
+                        svg(icon).width(26).height(26),
                         text(kind.title())
                             .size(14)
                             .width(Length::Fill)
@@ -1493,12 +1941,14 @@ impl Roton {
             .height(NODE_CARD_HEIGHT)
             .align_x(alignment::Horizontal::Center)
             .align_y(alignment::Vertical::Center)
-            .style(if self.is_config_locked() {
-                node_card_disabled
-            } else if self.selected_node.is_none() && self.hovered_node == Some(kind) {
-                node_card_hovered
-            } else {
-                node_card
+            .style(move |iced_theme| {
+                if locked {
+                    node_card_disabled(iced_theme)
+                } else if is_hovered {
+                    node_card_hovered(theme)
+                } else {
+                    node_card(theme)
+                }
             }),
         )
         .on_enter(Message::HoverNode(Some(kind)))
@@ -1536,14 +1986,15 @@ impl Roton {
                 self.dropdown(&self.selected_format, &self.formats, Message::SelectFormat),
                 text("Save Folder").size(13),
                 row![
-                    textbox::readonly(truncate_text(
-                        &self.settings.active_workspace().save_path,
-                        38
-                    )),
-                    ui_button::text_button(
+                    textbox::readonly(
+                        truncate_text(&self.settings.active_workspace().save_path, 38),
+                        self.workspace_theme.component_palette(),
+                    ),
+                    ui_button::themed_text_button(
                         "Choose",
                         ButtonVariant::Secondary,
                         (!self.is_config_locked()).then_some(Message::ChooseOutputFolder),
+                        self.workspace_theme.component_palette(),
                     ),
                 ]
                 .spacing(8)
@@ -1580,10 +2031,11 @@ impl Roton {
                 ]
                 .spacing(10),
                 if self.screen_mode == ScreenMode::SelectArea {
-                    Element::<Message>::from(ui_button::fill_text_button(
+                    Element::<Message>::from(ui_button::accent_fill_text_button(
                         "Select Area",
-                        ButtonVariant::Primary,
                         (!self.is_config_locked()).then_some(Message::SelectArea),
+                        self.workspace_theme.accent(),
+                        self.workspace_theme.accent_hover(),
                     ))
                 } else {
                     Element::<Message>::from(
@@ -1614,10 +2066,16 @@ impl Roton {
                     mouse_area(
                         container(svg("assets/icons/x.svg").width(16).height(16))
                             .padding(8)
-                            .style(if self.is_modal_close_hovered {
-                                ghost_card_hovered
-                            } else {
-                                ghost_card
+                            .style({
+                                let theme = self.workspace_theme;
+                                let is_hovered = self.is_modal_close_hovered;
+                                move |iced_theme| {
+                                    if is_hovered {
+                                        ghost_card_hovered(theme)
+                                    } else {
+                                        ghost_card(iced_theme, theme)
+                                    }
+                                }
                             })
                     )
                     .on_enter(Message::HoverModalClose(true))
@@ -1630,6 +2088,7 @@ impl Roton {
             .spacing(18),
             460.0,
             progress,
+            self.workspace_theme.component_palette(),
         )
     }
 
@@ -1638,6 +2097,10 @@ impl Roton {
             ScreenMode::Fullscreen => "assets/icons/fullscreen.svg",
             ScreenMode::SelectArea => "assets/icons/square-dashed-mouse-pointer.svg",
         };
+        let theme = self.workspace_theme;
+        let locked = self.is_config_locked();
+        let is_selected = self.screen_mode == mode;
+        let is_hovered = self.hovered_screen_mode == Some(mode);
 
         mouse_area(
             container(
@@ -1657,19 +2120,21 @@ impl Roton {
             .height(120)
             .align_x(alignment::Horizontal::Center)
             .align_y(alignment::Vertical::Center)
-            .style(if self.is_config_locked() {
-                mode_card_disabled
-            } else if self.screen_mode == mode {
-                selected_mode_card
-            } else if self.hovered_screen_mode == Some(mode) {
-                node_card_hovered
-            } else {
-                node_card
+            .style(move |iced_theme| {
+                if locked {
+                    mode_card_disabled(iced_theme)
+                } else if is_selected {
+                    selected_mode_card(theme)
+                } else if is_hovered {
+                    node_card_hovered(theme)
+                } else {
+                    node_card(theme)
+                }
             }),
         )
         .on_enter(Message::HoverScreenMode(Some(mode)))
         .on_exit(Message::HoverScreenMode(None))
-        .on_press(if self.is_config_locked() {
+        .on_press(if locked {
             Message::Noop
         } else {
             Message::SelectScreenMode(mode)
@@ -1683,16 +2148,25 @@ impl Roton {
         } else {
             AudioMode::Mic
         };
+        let icon = if self.mic_mode == AudioMode::Mic {
+            "assets/icons/mic.svg"
+        } else {
+            "assets/icons/mic-off.svg"
+        };
         let subtitle = if self.mic_mode == AudioMode::Mic {
             "Microphone Will Be Recorded"
         } else {
             "Microphone Is Muted"
         };
+        let theme = self.workspace_theme;
+        let locked = self.is_config_locked();
+        let is_active = self.mic_mode == AudioMode::Mic;
+        let is_hovered = self.is_mic_toggle_hovered;
 
         mouse_area(
             container(
                 column![
-                    svg("assets/icons/mic.svg").width(54).height(54),
+                    svg(icon).width(54).height(54),
                     text(self.mic_mode.label())
                         .size(12)
                         .width(Length::Fill)
@@ -1711,19 +2185,21 @@ impl Roton {
             .height(140)
             .align_x(alignment::Horizontal::Center)
             .align_y(alignment::Vertical::Center)
-            .style(if self.is_config_locked() {
-                mode_card_disabled
-            } else if self.mic_mode == AudioMode::Mic {
-                selected_mode_card
-            } else if self.is_mic_toggle_hovered {
-                node_card_hovered
-            } else {
-                node_card
+            .style(move |iced_theme| {
+                if locked {
+                    mode_card_disabled(iced_theme)
+                } else if is_active {
+                    selected_mode_card(theme)
+                } else if is_hovered {
+                    node_card_hovered(theme)
+                } else {
+                    node_card(theme)
+                }
             }),
         )
         .on_enter(Message::HoverMicToggle(true))
         .on_exit(Message::HoverMicToggle(false))
-        .on_press(if self.is_config_locked() {
+        .on_press(if locked {
             Message::Noop
         } else {
             Message::SelectMicMode(next)
@@ -1741,6 +2217,7 @@ impl Roton {
         on_exit: Message,
     ) -> Element<Message> {
         let locked = self.is_config_locked();
+        let theme = self.workspace_theme;
         container(
             row![
                 text(label).size(13),
@@ -1771,18 +2248,20 @@ impl Roton {
                     .padding(3)
                     .width(42)
                     .height(22)
-                    .style(if locked {
-                        switch_track_disabled
-                    } else if is_active {
-                        if is_hovered {
-                            switch_track_active_hovered
+                    .style(move |iced_theme| {
+                        if locked {
+                            switch_track_disabled(iced_theme)
+                        } else if is_active {
+                            if is_hovered {
+                                switch_track_active_hovered(theme)
+                            } else {
+                                switch_track_active(theme)
+                            }
+                        } else if is_hovered {
+                            switch_track_hovered(iced_theme)
                         } else {
-                            switch_track_active
+                            switch_track(iced_theme)
                         }
-                    } else if is_hovered {
-                        switch_track_hovered
-                    } else {
-                        switch_track
                     })
                 )
                 .on_enter(on_enter)
@@ -1810,11 +2289,12 @@ impl Roton {
                 .map(|option| OptionItem::new(option, on_select(option.clone())).into()),
             36,
             self.is_config_locked(),
+            self.workspace_theme.component_palette(),
         )
     }
 }
 
-fn connector_svg_handle() -> svg::Handle {
+fn connector_svg_handle(theme: WorkspaceTheme) -> svg::Handle {
     let center_x = GRAPH_WIDTH / 2.0;
     let output_y = NODE_CARD_HEIGHT;
     let lower_y = NODE_CARD_HEIGHT + NODE_COLUMN_SPACING;
@@ -1832,8 +2312,8 @@ fn connector_svg_handle() -> svg::Handle {
        M {cx} {split_y}
        C {cx} {right_c1_y}, {mic_x} {right_c2_y}, {mic_x} {lower_y}"
     fill="none"
-    stroke="#f4f2eb"
-    stroke-opacity="0.48"
+    stroke="{stroke}"
+    stroke-opacity="0.62"
     stroke-width="2.25"
     stroke-linecap="round"
     stroke-linejoin="round"
@@ -1848,6 +2328,7 @@ fn connector_svg_handle() -> svg::Handle {
         screen_x = screen_x,
         mic_x = mic_x,
         lower_y = lower_y,
+        stroke = theme.connector_hex(),
         left_c1_y = split_y + 18.0,
         left_c2_y = lower_y - 18.0,
         right_c1_y = split_y + 18.0,
@@ -1857,27 +2338,27 @@ fn connector_svg_handle() -> svg::Handle {
     svg::Handle::from_memory(markup.into_bytes())
 }
 
-fn panel(_: &Theme) -> container::Style {
+fn panel(theme: WorkspaceTheme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgb8(34, 34, 32).into()),
+        background: Some(theme.app_background().into()),
         text_color: Some(Color::from_rgb8(224, 222, 216)),
         border: border::rounded(7).width(0),
         shadow: Shadow::default(),
     }
 }
 
-fn sidebar(_: &Theme) -> container::Style {
+fn sidebar(theme: WorkspaceTheme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgb8(31, 31, 29).into()),
+        background: Some(theme.sidebar_background().into()),
         text_color: Some(Color::from_rgb8(224, 222, 216)),
         border: border::width(0),
         shadow: Shadow::default(),
     }
 }
 
-fn titlebar(_: &Theme) -> container::Style {
+fn titlebar(theme: WorkspaceTheme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgb8(30, 30, 28).into()),
+        background: Some(theme.titlebar_background().into()),
         text_color: Some(Color::from_rgb8(236, 234, 228)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
@@ -1911,9 +2392,9 @@ fn titlebar_icon_button(_: &Theme) -> container::Style {
     }
 }
 
-fn titlebar_menu_surface(_: &Theme) -> container::Style {
+fn titlebar_menu_surface(theme: WorkspaceTheme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgb8(47, 47, 44).into()),
+        background: Some(theme.surface().into()),
         text_color: Some(Color::from_rgb8(236, 234, 228)),
         border: border::rounded(9).width(0),
         shadow: Shadow {
@@ -1924,7 +2405,7 @@ fn titlebar_menu_surface(_: &Theme) -> container::Style {
     }
 }
 
-fn titlebar_menu_item(_: &Theme) -> container::Style {
+fn titlebar_menu_item(_: WorkspaceTheme) -> container::Style {
     container::Style {
         background: Some(Color::TRANSPARENT.into()),
         text_color: Some(Color::from_rgb8(232, 230, 222)),
@@ -1933,11 +2414,26 @@ fn titlebar_menu_item(_: &Theme) -> container::Style {
     }
 }
 
-fn titlebar_menu_item_hovered(_: &Theme) -> container::Style {
+fn titlebar_menu_item_hovered(theme: WorkspaceTheme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgb8(62, 62, 58).into()),
+        background: Some(theme.surface_hover().into()),
         text_color: Some(Color::from_rgb8(246, 244, 238)),
         border: border::rounded(6).width(0),
+        shadow: Shadow::default(),
+    }
+}
+
+fn theme_swatch_style(theme: WorkspaceTheme, is_selected: bool) -> container::Style {
+    container::Style {
+        background: Some(theme.accent().into()),
+        text_color: Some(Color::from_rgb8(255, 255, 255)),
+        border: border::rounded(12)
+            .color(if is_selected {
+                Color::from_rgb8(246, 244, 238)
+            } else {
+                Color::from_rgba(1.0, 1.0, 1.0, 0.18)
+            })
+            .width(if is_selected { 2 } else { 1 }),
         shadow: Shadow::default(),
     }
 }
@@ -1946,18 +2442,18 @@ fn ease_out(progress: f32) -> f32 {
     1.0 - (1.0 - progress).powi(3)
 }
 
-fn record_button(_: &Theme) -> container::Style {
+fn record_button(theme: WorkspaceTheme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgb8(47, 94, 158).into()),
+        background: Some(theme.accent().into()),
         text_color: Some(Color::from_rgb8(232, 242, 255)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
     }
 }
 
-fn record_button_hovered(_: &Theme) -> container::Style {
+fn record_button_hovered(theme: WorkspaceTheme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgb8(37, 79, 138).into()),
+        background: Some(theme.accent_hover().into()),
         text_color: Some(Color::from_rgb8(232, 242, 255)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
@@ -2054,18 +2550,18 @@ fn switch_track_hovered(_: &Theme) -> container::Style {
     }
 }
 
-fn switch_track_active(_: &Theme) -> container::Style {
+fn switch_track_active(theme: WorkspaceTheme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgb8(47, 94, 158).into()),
+        background: Some(theme.accent().into()),
         text_color: Some(Color::TRANSPARENT),
         border: border::rounded(11).width(0),
         shadow: Shadow::default(),
     }
 }
 
-fn switch_track_active_hovered(_: &Theme) -> container::Style {
+fn switch_track_active_hovered(theme: WorkspaceTheme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgb8(37, 79, 138).into()),
+        background: Some(theme.accent_hover().into()),
         text_color: Some(Color::TRANSPARENT),
         border: border::rounded(11).width(0),
         shadow: Shadow::default(),
@@ -2108,18 +2604,18 @@ fn switch_knob_disabled(_: &Theme) -> container::Style {
     }
 }
 
-fn node_card(_: &Theme) -> container::Style {
+fn node_card(theme: WorkspaceTheme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgb8(45, 45, 42).into()),
+        background: Some(theme.surface().into()),
         text_color: Some(Color::from_rgb8(232, 230, 222)),
         border: border::rounded(12).width(0),
         shadow: Shadow::default(),
     }
 }
 
-fn selected_mode_card(_: &Theme) -> container::Style {
+fn selected_mode_card(theme: WorkspaceTheme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgb8(54, 59, 64).into()),
+        background: Some(theme.selected_surface().into()),
         text_color: Some(Color::from_rgb8(235, 242, 250)),
         border: border::rounded(12).width(0),
         shadow: Shadow::default(),
@@ -2135,9 +2631,9 @@ fn mode_card_disabled(_: &Theme) -> container::Style {
     }
 }
 
-fn node_card_hovered(_: &Theme) -> container::Style {
+fn node_card_hovered(theme: WorkspaceTheme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgb8(50, 50, 47).into()),
+        background: Some(theme.surface_hover().into()),
         text_color: Some(Color::from_rgb8(244, 242, 235)),
         border: border::rounded(12).width(0),
         shadow: Shadow::default(),
@@ -2153,19 +2649,19 @@ fn node_card_disabled(_: &Theme) -> container::Style {
     }
 }
 
-fn ghost_card(_: &Theme) -> container::Style {
+fn ghost_card(_: &Theme, theme: WorkspaceTheme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgb8(38, 38, 35).into()),
-        text_color: Some(Color::from_rgb8(145, 143, 136)),
+        background: Some(theme.disabled_surface().into()),
+        text_color: Some(Color::from_rgb8(170, 168, 160)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
     }
 }
 
-fn ghost_card_hovered(_: &Theme) -> container::Style {
+fn ghost_card_hovered(theme: WorkspaceTheme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgb8(46, 46, 42).into()),
-        text_color: Some(Color::from_rgb8(190, 188, 179)),
+        background: Some(theme.surface_hover().into()),
+        text_color: Some(Color::from_rgb8(232, 230, 222)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
     }

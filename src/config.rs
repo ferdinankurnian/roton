@@ -23,6 +23,8 @@ pub struct Workspace {
     pub show_cursor: bool,
     #[serde(default)]
     pub record_screen_sound: bool,
+    #[serde(default = "default_theme")]
+    pub theme: String,
 }
 
 impl Default for Workspace {
@@ -38,6 +40,7 @@ impl Default for Workspace {
             selected_area: None,
             show_cursor: default_show_cursor(),
             record_screen_sound: false,
+            theme: default_theme(),
         }
     }
 }
@@ -93,6 +96,10 @@ impl Workspace {
 
         if !["Fullscreen", "SelectArea"].contains(&self.screen_mode.as_str()) {
             self.screen_mode = default_screen_mode();
+        }
+
+        if !["Blue", "Green", "Red", "Purple", "Amber"].contains(&self.theme.as_str()) {
+            self.theme = default_theme();
         }
     }
 }
@@ -208,6 +215,10 @@ fn default_show_cursor() -> bool {
     true
 }
 
+fn default_theme() -> String {
+    "Blue".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Settings, Workspace};
@@ -257,6 +268,7 @@ mod tests {
         workspace.selected_area = Some("10,20 1280x720".to_string());
         workspace.show_cursor = false;
         workspace.record_screen_sound = true;
+        workspace.theme = "Green".to_string();
 
         let content = serde_json::to_string(&Settings {
             minimize_to_tray: false,
@@ -275,5 +287,24 @@ mod tests {
         assert_eq!(workspace.selected_area.as_deref(), Some("10,20 1280x720"));
         assert!(!workspace.show_cursor);
         assert!(workspace.record_screen_sound);
+        assert_eq!(workspace.theme, "Green");
+    }
+
+    #[test]
+    fn resets_invalid_workspace_theme() {
+        let settings = Settings::from_json(
+            r#"{
+                "workspaces": [
+                    {
+                        "name": "Default",
+                        "save_path": "/tmp/videos",
+                        "theme": "Hotdog"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(settings.active_workspace().theme, "Blue");
     }
 }

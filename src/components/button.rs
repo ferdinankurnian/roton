@@ -1,72 +1,104 @@
-use super::overlay::default_cursor;
+use super::{overlay::default_cursor, styles};
 use iced::widget::{button, svg, text};
-use iced::{border, Color, Element, Length, Shadow, Theme};
+use iced::{border, Color, Element, Length, Shadow};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Variant {
-    Primary,
     Secondary,
     Danger,
     Side,
 }
 
-pub fn text_button<'a, Message: Clone + 'a>(
+pub fn themed_text_button<'a, Message: Clone + 'a>(
     label: &'a str,
     variant: Variant,
     on_press: Option<Message>,
+    palette: styles::Palette,
 ) -> Element<'a, Message> {
     default_cursor(
         button(text(label).size(13))
             .padding([10, 14])
-            .style(move |theme, status| style(theme, status, variant))
+            .style(move |_, status| style_with_palette(status, variant, palette))
             .on_press_maybe(on_press),
     )
 }
 
-pub fn fill_text_button<'a, Message: Clone + 'a>(
+pub fn accent_text_button<'a, Message: Clone + 'a>(
     label: &'a str,
-    variant: Variant,
     on_press: Option<Message>,
+    accent: Color,
+    hovered_accent: Color,
+) -> Element<'a, Message> {
+    default_cursor(
+        button(text(label).size(13))
+            .padding([10, 14])
+            .style(move |_, status| primary_style(status, accent, hovered_accent))
+            .on_press_maybe(on_press),
+    )
+}
+
+pub fn accent_fill_text_button<'a, Message: Clone + 'a>(
+    label: &'a str,
+    on_press: Option<Message>,
+    accent: Color,
+    hovered_accent: Color,
 ) -> Element<'a, Message> {
     default_cursor(
         button(text(label).size(13))
             .padding([10, 14])
             .width(Length::Fill)
-            .style(move |theme, status| style(theme, status, variant))
+            .style(move |_, status| primary_style(status, accent, hovered_accent))
             .on_press_maybe(on_press),
     )
 }
 
-pub fn compact_icon_button<'a, Message: Clone + 'a>(
+pub fn themed_compact_icon_button<'a, Message: Clone + 'a>(
     icon: impl Into<svg::Handle>,
     variant: Variant,
     on_press: Option<Message>,
+    palette: styles::Palette,
 ) -> Element<'a, Message> {
     default_cursor(
         button(svg(icon).width(18).height(18))
             .width(38)
             .height(38)
             .padding(10)
-            .style(move |theme, status| style(theme, status, variant))
+            .style(move |_, status| style_with_palette(status, variant, palette))
             .on_press_maybe(on_press),
     )
 }
 
-fn style(_: &Theme, status: button::Status, variant: Variant) -> button::Style {
+fn primary_style(status: button::Status, accent: Color, hovered_accent: Color) -> button::Style {
+    let background = match status {
+        button::Status::Hovered | button::Status::Pressed => hovered_accent,
+        button::Status::Disabled => Color::from_rgb8(43, 43, 40),
+        button::Status::Active => accent,
+    };
+    let text_color = if matches!(status, button::Status::Disabled) {
+        Color::from_rgb8(126, 124, 118)
+    } else {
+        Color::from_rgb8(232, 242, 255)
+    };
+
+    button::Style {
+        background: Some(background.into()),
+        text_color,
+        border: border::rounded(8).width(0),
+        shadow: Shadow::default(),
+    }
+}
+
+fn style_with_palette(
+    status: button::Status,
+    variant: Variant,
+    palette: styles::Palette,
+) -> button::Style {
     let (background, hovered_background, text_color, border) = match variant {
-        Variant::Primary => (
-            Color::from_rgb8(47, 94, 158),
-            Color::from_rgb8(37, 79, 138),
-            Color::from_rgb8(232, 242, 255),
-            border::rounded(8).width(0),
-        ),
         Variant::Secondary => (
-            Color::from_rgb8(43, 43, 40),
-            Color::from_rgb8(55, 55, 51),
-            Color::from_rgb8(210, 208, 200),
-            border::rounded(7)
-                .color(Color::from_rgb8(76, 75, 70))
-                .width(1),
+            palette.field,
+            palette.field_hover,
+            palette.text,
+            border::rounded(7).color(palette.separator).width(1),
         ),
         Variant::Danger => (
             Color::from_rgb8(170, 43, 48),
@@ -75,9 +107,9 @@ fn style(_: &Theme, status: button::Status, variant: Variant) -> button::Style {
             border::rounded(8).width(0),
         ),
         Variant::Side => (
-            Color::from_rgb8(47, 47, 44),
-            Color::from_rgb8(58, 58, 54),
-            Color::from_rgb8(230, 228, 220),
+            palette.field,
+            palette.field_hover,
+            palette.text,
             border::rounded(8).width(0),
         ),
     };
@@ -90,8 +122,8 @@ fn style(_: &Theme, status: button::Status, variant: Variant) -> button::Style {
             shadow: Shadow::default(),
         },
         button::Status::Disabled => button::Style {
-            background: Some(Color::from_rgb8(43, 43, 40).into()),
-            text_color: Color::from_rgb8(126, 124, 118),
+            background: Some(palette.field_disabled.into()),
+            text_color: palette.text_disabled,
             border,
             shadow: Shadow::default(),
         },
