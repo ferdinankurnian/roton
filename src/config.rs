@@ -25,6 +25,10 @@ pub struct Workspace {
     pub record_screen_sound: bool,
     #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default = "default_recording_sort")]
+    pub recording_sort: String,
+    #[serde(default)]
+    pub recording_order: Vec<String>,
 }
 
 impl Default for Workspace {
@@ -41,6 +45,8 @@ impl Default for Workspace {
             show_cursor: default_show_cursor(),
             record_screen_sound: false,
             theme: default_theme(),
+            recording_sort: default_recording_sort(),
+            recording_order: Vec::new(),
         }
     }
 }
@@ -100,6 +106,10 @@ impl Workspace {
 
         if !["Blue", "Green", "Red", "Purple", "Amber"].contains(&self.theme.as_str()) {
             self.theme = default_theme();
+        }
+
+        if !["Newest", "Oldest", "A-Z", "Z-A", "Custom"].contains(&self.recording_sort.as_str()) {
+            self.recording_sort = default_recording_sort();
         }
     }
 }
@@ -193,6 +203,7 @@ fn default_save_path() -> String {
             user_dirs
                 .video_dir()
                 .unwrap_or_else(|| user_dirs.home_dir())
+                .join("Roton")
                 .to_string_lossy()
                 .to_string()
         })
@@ -217,6 +228,10 @@ fn default_show_cursor() -> bool {
 
 fn default_theme() -> String {
     "Blue".to_string()
+}
+
+fn default_recording_sort() -> String {
+    "Newest".to_string()
 }
 
 #[cfg(test)]

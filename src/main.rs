@@ -11,20 +11,26 @@ use components::{dialog, styles as component_styles, textbox};
 use config::{Settings, Workspace};
 use display_info::DisplayInfo;
 use iced::widget::{
-    button, column, container, image, mouse_area, row, stack, svg, text, text_input, Space,
+    button, column, container, image, mouse_area, operation, row, scrollable, slider, stack, svg,
+    text, Space,
 };
 use iced::{
-    alignment, application, border, time, window, Color, Element, Length, Padding, Shadow,
-    Subscription, Task, Theme,
+    alignment, application, border, event, keyboard, mouse, time, window, Background, Color,
+    ContentFit, Element, Length, Padding, Shadow, Subscription, Task, Theme,
 };
+use iced_video_player::{Video, VideoPlayer};
 use notify_rust::Notification;
 use recorder::Recorder;
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use url::Url;
 
 const NODE_CARD_WIDTH: f32 = 148.0;
 const NODE_CARD_HEIGHT: f32 = 134.0;
@@ -33,15 +39,23 @@ const NODE_COLUMN_SPACING: f32 = 52.0;
 const GRAPH_WIDTH: f32 = (NODE_CARD_WIDTH * 2.0) + NODE_ROW_SPACING;
 const GRAPH_HEIGHT: f32 = (NODE_CARD_HEIGHT * 2.0) + NODE_COLUMN_SPACING;
 const WORKSPACE_ACTIONS_MENU_LEFT: f32 = 154.0;
+const SIDEBAR_WIDTH: f32 = 252.0;
+const RECORDING_SORT_MENU_LEFT: f32 = 142.0;
+const RECORDING_SORT_MENU_TOP: f32 = 194.0;
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> iced::Result {
-    application("roton", Roton::update, Roton::view)
-        .theme(|_| Theme::Dark)
+    application(Roton::boot, Roton::update, Roton::view)
+        .title("roton")
+        .theme(app_theme)
         .subscription(Roton::subscription)
         .window_size((1150.0, 580.0))
         .decorations(false)
-        .run_with(|| (Roton::new(), Task::none()))
+        .run()
+}
+
+fn app_theme(_: &Roton) -> Theme {
+    Theme::Dark
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +75,7 @@ impl ScreenMode {
     fn label(self) -> &'static str {
         match self {
             Self::Fullscreen => "Fullscreen",
-            Self::SelectArea => "Select Area",
+            Self::SelectArea => "Area",
         }
     }
 }
@@ -70,6 +84,81 @@ impl ScreenMode {
 enum AudioMode {
     Mute,
     Mic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordingSort {
+    Newest,
+    Oldest,
+    AToZ,
+    ZToA,
+    Custom,
+}
+
+impl RecordingSort {
+    const ALL: [Self; 5] = [
+        Self::Newest,
+        Self::Oldest,
+        Self::AToZ,
+        Self::ZToA,
+        Self::Custom,
+    ];
+
+    fn from_key(key: &str) -> Self {
+        match key {
+            "Oldest" => Self::Oldest,
+            "A-Z" => Self::AToZ,
+            "Z-A" => Self::ZToA,
+            "Custom" => Self::Custom,
+            _ => Self::Newest,
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Newest => "Newest",
+            Self::Oldest => "Oldest",
+            Self::AToZ => "A-Z",
+            Self::ZToA => "Z-A",
+            Self::Custom => "Custom",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        self.key()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaybackShortcut {
+    Toggle,
+    Rewind,
+    Forward,
+}
+
+#[derive(Debug, Clone)]
+struct RecordingItem {
+    path: PathBuf,
+    file_name: String,
+    title: String,
+    extension: String,
+    duration: Option<Duration>,
+    modified: SystemTime,
+    thumbnail_path: Option<PathBuf>,
+}
+
+struct VideoModal {
+    path: PathBuf,
+    title: String,
+    extension: String,
+    video: Option<Video>,
+    video_width: u32,
+    video_height: u32,
+    duration: Duration,
+    position: f64,
+    is_dragging: bool,
+    resume_after_seek: bool,
+    load_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +241,16 @@ impl WorkspaceTheme {
 
     fn app_background(self) -> Color {
         match self {
+            Self::Blue => Color::from_rgb8(35, 35, 33),
+            Self::Green => Color::from_rgb8(33, 37, 33),
+            Self::Red => Color::from_rgb8(37, 33, 33),
+            Self::Purple => Color::from_rgb8(35, 33, 37),
+            Self::Amber => Color::from_rgb8(37, 35, 31),
+        }
+    }
+
+    fn sidebar_background(self) -> Color {
+        match self {
             Self::Blue => Color::from_rgb8(39, 39, 37),
             Self::Green => Color::from_rgb8(37, 41, 37),
             Self::Red => Color::from_rgb8(41, 37, 37),
@@ -160,23 +259,13 @@ impl WorkspaceTheme {
         }
     }
 
-    fn sidebar_background(self) -> Color {
-        match self {
-            Self::Blue => Color::from_rgb8(36, 36, 34),
-            Self::Green => Color::from_rgb8(34, 38, 34),
-            Self::Red => Color::from_rgb8(38, 34, 34),
-            Self::Purple => Color::from_rgb8(36, 34, 38),
-            Self::Amber => Color::from_rgb8(38, 36, 32),
-        }
-    }
-
     fn titlebar_background(self) -> Color {
         match self {
-            Self::Blue => Color::from_rgb8(35, 35, 33),
-            Self::Green => Color::from_rgb8(33, 37, 33),
-            Self::Red => Color::from_rgb8(37, 33, 33),
-            Self::Purple => Color::from_rgb8(35, 33, 37),
-            Self::Amber => Color::from_rgb8(37, 35, 31),
+            Self::Blue => Color::from_rgb8(39, 39, 37),
+            Self::Green => Color::from_rgb8(37, 41, 37),
+            Self::Red => Color::from_rgb8(41, 37, 37),
+            Self::Purple => Color::from_rgb8(39, 37, 41),
+            Self::Amber => Color::from_rgb8(41, 39, 35),
         }
     }
 
@@ -341,12 +430,35 @@ enum Message {
     ToggleScreenSound,
     ChooseOutputFolder,
     OutputFolderChosen(Option<String>),
+    RecordingsLoaded(usize, Vec<RecordingItem>),
+    RecordingSearchChanged(String),
+    ToggleRecordingSortMenu,
+    SelectRecordingSort(RecordingSort),
+    OpenRecording(PathBuf),
+    ToggleVideoPlayback,
+    PlaybackShortcut(PlaybackShortcut),
+    SeekVideo(f64),
+    SeekVideoReleased,
+    VideoFrameRendered,
+    VideoEnded,
+    VideoError(String),
+    StartRenameRecording,
+    RecordingTitleChanged(String),
+    CancelRenameRecording,
+    SaveRecordingTitle,
+    StartRecordingDrag(PathBuf),
+    DragRecordingOver(PathBuf),
+    FinishRecordingDrag,
+    ScrollRecordings(mouse::ScrollDelta),
+    HoverRecording(Option<PathBuf>),
     ToggleWorkspaceActions,
     SelectWorkspace(usize),
     SelectWorkspaceTheme(WorkspaceTheme),
     OpenCreateWorkspace,
     OpenRenameWorkspace,
     DeleteWorkspace,
+    ConfirmDeleteWorkspace,
+    CancelDeleteWorkspace,
     WorkspaceNameChanged(String),
     ConfirmWorkspaceName,
     CancelWorkspaceName,
@@ -368,6 +480,17 @@ struct Roton {
     workspace_name_action: Option<WorkspaceNameAction>,
     workspace_name: String,
     workspace_name_error: Option<String>,
+    show_delete_workspace_confirmation: bool,
+    recordings: Vec<RecordingItem>,
+    recording_search: String,
+    recording_sort: RecordingSort,
+    is_recording_sort_open: bool,
+    video_modal: Option<VideoModal>,
+    is_recording_title_editing: bool,
+    recording_title_edit: String,
+    recording_title_error: Option<String>,
+    dragging_recording: Option<PathBuf>,
+    hovered_recording: Option<PathBuf>,
     audio_devices: Vec<AudioDevice>,
     formats: Vec<String>,
     selected_format: String,
@@ -398,10 +521,12 @@ struct Roton {
     is_show_cursor_hovered: bool,
     is_screen_sound_hovered: bool,
     modal_progress: f32,
+    is_modal_closing: bool,
     is_recording: bool,
     is_paused: bool,
     pause_blink_on: bool,
-    elapsed: u64,
+    elapsed: Duration,
+    active_recording_started_at: Option<Instant>,
     current_recording_path: Option<PathBuf>,
     has_wl_screenrec: bool,
     has_scrop: bool,
@@ -410,6 +535,12 @@ struct Roton {
 }
 
 impl Roton {
+    fn boot() -> (Self, Task<Message>) {
+        let app = Self::new();
+        let task = app.load_recordings_task();
+        (app, task)
+    }
+
     fn new() -> Self {
         let mut app = Self {
             recorder: Arc::new(Mutex::new(Recorder::new())),
@@ -419,6 +550,17 @@ impl Roton {
             workspace_name_action: None,
             workspace_name: String::new(),
             workspace_name_error: None,
+            show_delete_workspace_confirmation: false,
+            recordings: Vec::new(),
+            recording_search: String::new(),
+            recording_sort: RecordingSort::Newest,
+            is_recording_sort_open: false,
+            video_modal: None,
+            is_recording_title_editing: false,
+            recording_title_edit: String::new(),
+            recording_title_error: None,
+            dragging_recording: None,
+            hovered_recording: None,
             audio_devices: Vec::new(),
             formats: vec!["MP4".to_string(), "MKV".to_string(), "WEBM".to_string()],
             selected_format: "MP4".to_string(),
@@ -449,10 +591,12 @@ impl Roton {
             is_show_cursor_hovered: false,
             is_screen_sound_hovered: false,
             modal_progress: 0.0,
+            is_modal_closing: false,
             is_recording: false,
             is_paused: false,
             pause_blink_on: true,
-            elapsed: 0,
+            elapsed: Duration::ZERO,
+            active_recording_started_at: None,
             current_recording_path: None,
             has_wl_screenrec: Recorder::is_installed("wl-screenrec"),
             has_scrop: Recorder::is_installed("scrop"),
@@ -472,6 +616,8 @@ impl Roton {
                 if self.is_recording {
                     if let Err(error) = self.finish_recording() {
                         eprintln!("Failed to stop recording: {error}");
+                    } else {
+                        return self.load_recordings_task();
                     }
                 } else {
                     if let Err(error) = self.start_recording() {
@@ -481,7 +627,8 @@ impl Roton {
             }
             Message::TogglePause => {
                 if self.is_recording {
-                    let result = if self.is_paused {
+                    let was_paused = self.is_paused;
+                    let result = if was_paused {
                         self.recorder
                             .lock()
                             .map_err(|_| "Recorder lock poisoned".to_string())
@@ -495,11 +642,14 @@ impl Roton {
 
                     if let Err(error) = result {
                         eprintln!("Failed to toggle pause: {error}");
+                    } else if was_paused {
+                        self.is_paused = false;
+                        self.active_recording_started_at = Some(Instant::now());
+                        self.pause_blink_on = true;
                     } else {
-                        self.is_paused = !self.is_paused;
-                        if !self.is_paused {
-                            self.pause_blink_on = true;
-                        }
+                        self.refresh_elapsed();
+                        self.active_recording_started_at = None;
+                        self.is_paused = true;
                     }
                 }
             }
@@ -507,7 +657,7 @@ impl Roton {
                 if self.is_titlebar_menu_open {
                     return Task::none();
                 }
-                return window::get_latest().and_then(window::drag);
+                return with_latest_window(window::drag);
             }
             Message::CloseWindow => {
                 if self.settings.minimize_to_tray {
@@ -515,31 +665,32 @@ impl Roton {
                 }
                 if self.is_recording {
                     self.show_close_confirmation = true;
+                    self.open_dialog_animation();
                     self.is_titlebar_menu_open = false;
                     self.hovered_titlebar_menu_item = None;
                     return Task::none();
                 }
-                return window::get_latest().and_then(window::close);
+                return with_latest_window(window::close);
             }
             Message::MaximizeWindow => {
                 self.is_titlebar_menu_open = false;
                 self.hovered_titlebar_menu_item = None;
-                return window::get_latest().and_then(|id| {
-                    window::get_maximized(id)
+                return with_latest_window(|id| {
+                    window::is_maximized(id)
                         .map(move |is_maximized| Message::SetWindowMaximized(!is_maximized))
                 });
             }
             Message::SetWindowMaximized(maximized) => {
                 self.is_window_maximized = maximized;
-                return window::get_latest().and_then(move |id| window::maximize(id, maximized));
+                return with_latest_window(move |id| window::maximize(id, maximized));
             }
             Message::MinimizeWindow => {
                 self.is_titlebar_menu_open = false;
                 self.hovered_titlebar_menu_item = None;
-                return window::get_latest().and_then(|id| window::minimize(id, true));
+                return with_latest_window(|id| window::minimize(id, true));
             }
             Message::RestoreWindow => {
-                return window::get_latest().and_then(|id| window::minimize(id, false));
+                return with_latest_window(|id| window::minimize(id, false));
             }
             Message::TrayTick => {
                 while let Ok(event) = TrayIconEvent::receiver().try_recv() {
@@ -572,10 +723,11 @@ impl Roton {
                 self.is_titlebar_menu_open = false;
                 self.hovered_titlebar_menu_item = None;
                 self.show_about_dialog = true;
+                self.open_dialog_animation();
                 self.is_modal_close_hovered = false;
             }
             Message::CloseAboutRoton => {
-                self.show_about_dialog = false;
+                self.close_dialog_animation();
                 self.is_modal_close_hovered = false;
             }
             Message::ToggleMinimalWindow => {
@@ -594,10 +746,10 @@ impl Roton {
                     eprintln!("Failed to stop recording before close: {error}");
                 }
                 self.show_close_confirmation = false;
-                return window::get_latest().and_then(window::close);
+                return with_latest_window(window::close);
             }
             Message::CancelClose => {
-                self.show_close_confirmation = false;
+                self.close_dialog_animation();
             }
             Message::OpenNode(kind) => {
                 self.is_titlebar_menu_open = false;
@@ -605,7 +757,7 @@ impl Roton {
                 self.close_workspace_menus();
                 self.selected_node = Some(kind);
                 self.hovered_node = None;
-                self.modal_progress = 0.0;
+                self.open_dialog_animation();
             }
             Message::HoverNode(kind) => {
                 if self.selected_node.is_none() {
@@ -642,21 +794,33 @@ impl Roton {
             }
             Message::RecordingTick => {
                 if self.is_recording && !self.is_paused {
-                    self.elapsed += 1;
+                    self.refresh_elapsed();
                 }
             }
             Message::Frame => {
-                if self.selected_node.is_some() {
+                if self.is_modal_closing {
+                    self.modal_progress = (self.modal_progress - 0.18).max(0.0);
+                    if self.modal_progress == 0.0 {
+                        self.close_active_dialogs();
+                        self.is_modal_closing = false;
+                    }
+                } else if self.has_active_dialog() {
                     self.modal_progress = (self.modal_progress + 0.16).min(1.0);
                 }
             }
             Message::CloseModal => {
-                self.selected_node = None;
+                if let Some(modal) = self.video_modal.as_mut() {
+                    if let Some(video) = modal.video.as_mut() {
+                        video.set_paused(true);
+                    }
+                }
+
+                self.close_dialog_animation();
                 self.hovered_node = None;
                 self.is_titlebar_menu_open = false;
                 self.hovered_titlebar_menu_item = None;
                 self.is_modal_close_hovered = false;
-                self.modal_progress = 0.0;
+                self.recording_title_error = None;
             }
             Message::SelectFormat(format) => {
                 if self.is_config_locked() {
@@ -692,6 +856,9 @@ impl Roton {
                 if self.is_config_locked() {
                     return Task::none();
                 }
+                if mode == ScreenMode::SelectArea && self.selected_area.is_none() {
+                    return Task::done(Message::SelectArea);
+                }
                 self.screen_mode = mode;
                 self.persist_workspace_state();
             }
@@ -703,8 +870,6 @@ impl Roton {
                     eprintln!("scrop is not installed");
                     return Task::none();
                 }
-                self.screen_mode = ScreenMode::SelectArea;
-                self.persist_workspace_state();
                 return Task::perform(select_area(), Message::AreaSelected);
             }
             Message::AreaSelected(area) => {
@@ -712,6 +877,7 @@ impl Roton {
                     return Task::none();
                 }
                 if let Some(area) = area {
+                    self.screen_mode = ScreenMode::SelectArea;
                     self.selected_area = Some(area);
                     self.persist_workspace_state();
                 }
@@ -743,7 +909,151 @@ impl Roton {
                 if let Some(path) = path {
                     self.settings.active_workspace_mut().save_path = path;
                     self.persist_workspace_state();
+                    return self.load_recordings_task();
                 }
+            }
+            Message::RecordingsLoaded(workspace_index, recordings) => {
+                if workspace_index == self.settings.active_workspace {
+                    self.recordings = recordings;
+                    self.normalize_recording_order();
+                }
+            }
+            Message::RecordingSearchChanged(search) => {
+                self.recording_search = search;
+            }
+            Message::ToggleRecordingSortMenu => {
+                self.close_workspace_menus();
+                self.is_recording_sort_open = !self.is_recording_sort_open;
+            }
+            Message::SelectRecordingSort(sort) => {
+                self.recording_sort = sort;
+                self.is_recording_sort_open = false;
+                self.dragging_recording = None;
+                self.persist_workspace_state();
+                self.normalize_recording_order();
+            }
+            Message::OpenRecording(path) => {
+                self.open_dialog_animation();
+                self.is_modal_close_hovered = false;
+                self.is_recording_sort_open = false;
+                self.close_workspace_menus();
+                return self.open_recording(path);
+            }
+            Message::ToggleVideoPlayback => {
+                return self.toggle_video_playback();
+            }
+            Message::PlaybackShortcut(shortcut) => {
+                if self.is_recording_title_editing {
+                    return Task::none();
+                }
+
+                return match shortcut {
+                    PlaybackShortcut::Toggle => self.toggle_video_playback(),
+                    PlaybackShortcut::Rewind => self.seek_video_relative(-5.0),
+                    PlaybackShortcut::Forward => self.seek_video_relative(5.0),
+                };
+            }
+            Message::SeekVideo(position) => {
+                if let Some(modal) = self.video_modal.as_mut() {
+                    if !modal.is_dragging {
+                        modal.resume_after_seek =
+                            modal.video.as_ref().is_some_and(|video| !video.paused());
+                    }
+
+                    modal.position = position;
+                    modal.is_dragging = true;
+
+                    if let Some(video) = modal.video.as_mut() {
+                        video.set_paused(true);
+                    }
+                }
+            }
+            Message::SeekVideoReleased => {
+                if let Some(modal) = self.video_modal.as_mut() {
+                    modal.is_dragging = false;
+
+                    if let Some(video) = modal.video.as_mut() {
+                        if let Err(error) =
+                            video.seek(Duration::from_secs_f64(modal.position.max(0.0)), false)
+                        {
+                            modal.load_error = Some(format!("Could not seek video: {error}"));
+                        } else {
+                            video.set_paused(!modal.resume_after_seek);
+                        }
+                    }
+                }
+            }
+            Message::VideoFrameRendered => {
+                if let Some(modal) = self.video_modal.as_mut() {
+                    if !modal.is_dragging {
+                        if let Some(video) = modal.video.as_ref() {
+                            modal.position = video.position().as_secs_f64();
+                            let player_duration = video.duration();
+
+                            if !player_duration.is_zero() {
+                                modal.duration = player_duration;
+                            }
+                        }
+                    }
+                }
+            }
+            Message::VideoEnded => {
+                if let Some(modal) = self.video_modal.as_mut() {
+                    modal.position = modal.duration.as_secs_f64();
+
+                    if let Some(video) = modal.video.as_mut() {
+                        video.set_paused(true);
+                    }
+                }
+            }
+            Message::VideoError(error) => {
+                if let Some(modal) = self.video_modal.as_mut() {
+                    modal.load_error = Some(error);
+
+                    if let Some(video) = modal.video.as_mut() {
+                        video.set_paused(true);
+                    }
+                }
+            }
+            Message::StartRenameRecording => {
+                if let Some(modal) = self.video_modal.as_ref() {
+                    self.is_recording_title_editing = true;
+                    self.recording_title_edit = modal.title.clone();
+                    self.recording_title_error = None;
+                    return Task::batch([
+                        operation::focus("recording-title"),
+                        operation::select_all("recording-title"),
+                    ]);
+                }
+            }
+            Message::RecordingTitleChanged(title) => {
+                self.recording_title_edit = title;
+                self.recording_title_error = None;
+            }
+            Message::CancelRenameRecording => {
+                self.is_recording_title_editing = false;
+                self.recording_title_edit.clear();
+                self.recording_title_error = None;
+            }
+            Message::SaveRecordingTitle => {
+                return self.save_recording_title();
+            }
+            Message::StartRecordingDrag(path) => {
+                if self.recording_sort == RecordingSort::Custom {
+                    self.dragging_recording = Some(path);
+                }
+            }
+            Message::DragRecordingOver(path) => {
+                self.reorder_recording_over(&path);
+            }
+            Message::FinishRecordingDrag => {
+                self.dragging_recording = None;
+            }
+            Message::ScrollRecordings(delta) => {
+                return operation::scroll_by("recording-list", scroll_delta_to_offset(delta));
+            }
+            Message::HoverRecording(path) => {
+                self.hovered_recording = path;
             }
             Message::ToggleWorkspaceActions => {
                 if self.is_config_locked() {
@@ -751,6 +1061,7 @@ impl Roton {
                 }
                 self.is_titlebar_menu_open = false;
                 self.hovered_titlebar_menu_item = None;
+                self.is_recording_sort_open = false;
                 self.is_workspace_actions_open = !self.is_workspace_actions_open;
             }
             Message::SelectWorkspace(index) => {
@@ -760,8 +1071,11 @@ impl Roton {
                 self.persist_workspace_state();
                 self.settings.active_workspace = index;
                 self.apply_active_workspace();
+                self.recording_search.clear();
+                self.recordings.clear();
                 self.close_workspace_menus();
                 self.save_settings();
+                return self.load_recordings_task();
             }
             Message::SelectWorkspaceTheme(theme) => {
                 if self.is_config_locked() {
@@ -778,7 +1092,8 @@ impl Roton {
                 self.workspace_name_action = Some(WorkspaceNameAction::Create);
                 self.workspace_name.clear();
                 self.workspace_name_error = None;
-                return text_input::focus("workspace-name");
+                self.open_dialog_animation();
+                return operation::focus("workspace-name");
             }
             Message::OpenRenameWorkspace => {
                 if self.is_config_locked() {
@@ -788,16 +1103,33 @@ impl Roton {
                 self.workspace_name_action = Some(WorkspaceNameAction::Rename);
                 self.workspace_name = self.settings.active_workspace().name.clone();
                 self.workspace_name_error = None;
+                self.open_dialog_animation();
                 return Task::batch([
-                    text_input::focus("workspace-name"),
-                    text_input::select_all("workspace-name"),
+                    operation::focus("workspace-name"),
+                    operation::select_all("workspace-name"),
                 ]);
             }
             Message::DeleteWorkspace => {
                 if self.is_config_locked() {
                     return Task::none();
                 }
+                self.close_workspace_menus();
+                if self.can_delete_active_workspace() {
+                    self.show_delete_workspace_confirmation = true;
+                    self.open_dialog_animation();
+                }
+            }
+            Message::ConfirmDeleteWorkspace => {
+                if self.is_config_locked() {
+                    self.show_delete_workspace_confirmation = false;
+                    return Task::none();
+                }
+                self.show_delete_workspace_confirmation = false;
                 self.delete_active_workspace();
+                return self.load_recordings_task();
+            }
+            Message::CancelDeleteWorkspace => {
+                self.close_dialog_animation();
             }
             Message::WorkspaceNameChanged(name) => {
                 self.workspace_name = name;
@@ -805,10 +1137,10 @@ impl Roton {
             }
             Message::ConfirmWorkspaceName => {
                 self.confirm_workspace_name();
+                return self.load_recordings_task();
             }
             Message::CancelWorkspaceName => {
-                self.workspace_name_action = None;
-                self.workspace_name.clear();
+                self.close_dialog_animation();
                 self.workspace_name_error = None;
             }
             Message::Noop => {}
@@ -819,6 +1151,7 @@ impl Roton {
 
     fn close_workspace_menus(&mut self) {
         self.is_workspace_actions_open = false;
+        self.is_recording_sort_open = false;
     }
 
     fn apply_active_workspace(&mut self) {
@@ -837,15 +1170,25 @@ impl Roton {
         } else {
             AudioMode::Mute
         };
-        self.screen_mode = if workspace.screen_mode == "SelectArea" {
+        self.selected_area = workspace.selected_area;
+        self.screen_mode = if workspace.screen_mode == "SelectArea" && self.selected_area.is_some()
+        {
             ScreenMode::SelectArea
         } else {
             ScreenMode::Fullscreen
         };
-        self.selected_area = workspace.selected_area;
         self.show_cursor = workspace.show_cursor;
         self.record_screen_sound = workspace.record_screen_sound;
         self.workspace_theme = WorkspaceTheme::from_key(&workspace.theme);
+        self.recording_sort = RecordingSort::from_key(&workspace.recording_sort);
+        self.is_recording_sort_open = false;
+        self.dragging_recording = None;
+        self.hovered_recording = None;
+        self.video_modal = None;
+        self.is_recording_title_editing = false;
+        self.recording_title_edit.clear();
+        self.is_recording_title_editing = false;
+        self.recording_title_error = None;
     }
 
     fn persist_workspace_state(&mut self) {
@@ -867,6 +1210,7 @@ impl Roton {
         workspace.show_cursor = self.show_cursor;
         workspace.record_screen_sound = self.record_screen_sound;
         workspace.theme = self.workspace_theme.key().to_string();
+        workspace.recording_sort = self.recording_sort.key().to_string();
         self.save_settings();
     }
 
@@ -874,6 +1218,49 @@ impl Roton {
         if let Err(error) = self.settings.save() {
             eprintln!("Failed to save settings: {error}");
         }
+    }
+
+    fn refresh_elapsed(&mut self) {
+        if let Some(started_at) = self.active_recording_started_at {
+            let now = Instant::now();
+            self.elapsed += now.duration_since(started_at);
+            self.active_recording_started_at = Some(now);
+        }
+    }
+
+    fn has_active_dialog(&self) -> bool {
+        self.workspace_name_action.is_some()
+            || self.show_delete_workspace_confirmation
+            || self.show_close_confirmation
+            || self.show_about_dialog
+            || self.video_modal.is_some()
+            || self.selected_node.is_some()
+    }
+
+    fn open_dialog_animation(&mut self) {
+        self.modal_progress = 0.0;
+        self.is_modal_closing = false;
+    }
+
+    fn close_dialog_animation(&mut self) {
+        if self.has_active_dialog() {
+            self.is_modal_closing = true;
+        }
+    }
+
+    fn close_active_dialogs(&mut self) {
+        self.workspace_name_action = None;
+        self.workspace_name.clear();
+        self.show_delete_workspace_confirmation = false;
+        self.show_close_confirmation = false;
+        self.show_about_dialog = false;
+        self.video_modal = None;
+        self.recording_title_edit.clear();
+        self.is_recording_title_editing = false;
+        self.recording_title_error = None;
+        self.selected_node = None;
+        self.hovered_node = None;
+        self.is_modal_close_hovered = false;
     }
 
     fn confirm_workspace_name(&mut self) {
@@ -906,9 +1293,8 @@ impl Roton {
         }
 
         self.save_settings();
-        self.workspace_name_action = None;
-        self.workspace_name.clear();
         self.workspace_name_error = None;
+        self.close_dialog_animation();
     }
 
     fn validate_workspace_name(&self, name: &str, action: WorkspaceNameAction) -> Option<String> {
@@ -950,6 +1336,7 @@ impl Roton {
     fn delete_active_workspace(&mut self) {
         if !self.can_delete_active_workspace() {
             self.close_workspace_menus();
+            self.show_delete_workspace_confirmation = false;
             return;
         }
 
@@ -962,6 +1349,7 @@ impl Roton {
             .min(self.settings.workspaces.len() - 1);
         self.apply_active_workspace();
         self.close_workspace_menus();
+        self.show_delete_workspace_confirmation = false;
         self.save_settings();
     }
 
@@ -990,10 +1378,13 @@ impl Roton {
         } else {
             None
         };
-        let geometry = if self.screen_mode == ScreenMode::SelectArea {
-            self.selected_area.as_deref()
-        } else {
-            None
+        let geometry = match self.screen_mode {
+            ScreenMode::Fullscreen => None,
+            ScreenMode::SelectArea => Some(
+                self.selected_area
+                    .as_deref()
+                    .ok_or_else(|| "Choose an area before recording".to_string())?,
+            ),
         };
 
         self.recorder
@@ -1012,7 +1403,8 @@ impl Roton {
         self.is_recording = true;
         self.is_paused = false;
         self.pause_blink_on = true;
-        self.elapsed = 0;
+        self.elapsed = Duration::ZERO;
+        self.active_recording_started_at = Some(Instant::now());
         self.current_recording_path = Some(output_path);
         Ok(())
     }
@@ -1028,7 +1420,8 @@ impl Roton {
         let video_path = self.current_recording_path.take();
         self.is_recording = false;
         self.is_paused = false;
-        self.elapsed = 0;
+        self.elapsed = Duration::ZERO;
+        self.active_recording_started_at = None;
         notify_recording_completed(
             self.settings.active_workspace().save_path.clone(),
             video_path,
@@ -1038,9 +1431,9 @@ impl Roton {
 
     fn minimize_to_tray(&self) -> Task<Message> {
         if self.tray_icon.is_none() {
-            return window::get_latest().and_then(window::close);
+            return with_latest_window(window::close);
         }
-        window::get_latest().and_then(|id| window::minimize(id, true))
+        with_latest_window(|id| window::minimize(id, true))
     }
 
     fn recording_output_path(&self) -> PathBuf {
@@ -1090,23 +1483,56 @@ impl Roton {
         let mut subscriptions = Vec::new();
 
         subscriptions.push(window::close_requests().map(|_| Message::CloseWindow));
-        subscriptions
-            .push(time::every(std::time::Duration::from_millis(350)).map(|_| Message::TrayTick));
+        subscriptions.push(time::every(Duration::from_millis(350)).map(|_| Message::TrayTick));
 
-        if self.selected_node.is_some() && self.modal_progress < 1.0 {
+        if self.has_active_dialog()
+            && (self.modal_progress < 1.0 || (self.is_modal_closing && self.modal_progress > 0.0))
+        {
             subscriptions.push(window::frames().map(|_| Message::Frame));
         }
 
         if self.is_paused {
-            subscriptions.push(
-                time::every(std::time::Duration::from_millis(420)).map(|_| Message::PauseBlinkTick),
-            );
+            subscriptions
+                .push(time::every(Duration::from_millis(420)).map(|_| Message::PauseBlinkTick));
         }
 
-        if self.is_recording {
-            subscriptions.push(
-                time::every(std::time::Duration::from_secs(1)).map(|_| Message::RecordingTick),
-            );
+        if self.is_recording && !self.is_paused {
+            subscriptions
+                .push(time::every(Duration::from_millis(10)).map(|_| Message::RecordingTick));
+        }
+
+        if self.video_modal.is_some() {
+            subscriptions.push(event::listen_with(|event, _, _| match event {
+                iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key,
+                    modifiers,
+                    repeat,
+                    ..
+                }) if !repeat && !modifiers.command() && !modifiers.alt() && !modifiers.logo() => {
+                    match key.as_ref() {
+                        keyboard::Key::Named(keyboard::key::Named::Space) => {
+                            Some(Message::PlaybackShortcut(PlaybackShortcut::Toggle))
+                        }
+                        keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
+                            Some(Message::PlaybackShortcut(PlaybackShortcut::Rewind))
+                        }
+                        keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
+                            Some(Message::PlaybackShortcut(PlaybackShortcut::Forward))
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }));
+        }
+
+        if self.dragging_recording.is_some() {
+            subscriptions.push(event::listen_with(|event, _, _| match event {
+                iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    Some(Message::FinishRecordingDrag)
+                }
+                _ => None,
+            }));
         }
 
         Subscription::batch(subscriptions)
@@ -1129,7 +1555,300 @@ impl Roton {
         }
     }
 
-    fn view(&self) -> Element<Message> {
+    fn load_recordings_task(&self) -> Task<Message> {
+        let workspace_index = self.settings.active_workspace;
+        let folder = PathBuf::from(self.settings.active_workspace().save_path.clone());
+
+        Task::perform(scan_recordings(folder), move |recordings| {
+            Message::RecordingsLoaded(workspace_index, recordings)
+        })
+    }
+
+    fn normalize_recording_order(&mut self) {
+        let file_names = self
+            .recordings
+            .iter()
+            .map(|recording| recording.file_name.clone())
+            .collect::<Vec<_>>();
+        let workspace = self.settings.active_workspace_mut();
+        let before = workspace.recording_order.clone();
+
+        workspace
+            .recording_order
+            .retain(|file_name| file_names.iter().any(|current| current == file_name));
+
+        for file_name in file_names {
+            if !workspace
+                .recording_order
+                .iter()
+                .any(|existing| existing == &file_name)
+            {
+                workspace.recording_order.push(file_name);
+            }
+        }
+
+        if workspace.recording_order != before {
+            self.save_settings();
+        }
+    }
+
+    fn visible_recordings(&self) -> Vec<&RecordingItem> {
+        let query = self.recording_search.trim().to_ascii_lowercase();
+        let mut recordings = self
+            .recordings
+            .iter()
+            .filter(|recording| {
+                query.is_empty()
+                    || recording.title.to_ascii_lowercase().contains(&query)
+                    || recording.extension.to_ascii_lowercase().contains(&query)
+            })
+            .collect::<Vec<_>>();
+
+        match self.recording_sort {
+            RecordingSort::Newest => recordings.sort_by(|a, b| b.modified.cmp(&a.modified)),
+            RecordingSort::Oldest => recordings.sort_by(|a, b| a.modified.cmp(&b.modified)),
+            RecordingSort::AToZ => recordings.sort_by(|a, b| {
+                a.title
+                    .to_ascii_lowercase()
+                    .cmp(&b.title.to_ascii_lowercase())
+            }),
+            RecordingSort::ZToA => recordings.sort_by(|a, b| {
+                b.title
+                    .to_ascii_lowercase()
+                    .cmp(&a.title.to_ascii_lowercase())
+            }),
+            RecordingSort::Custom => {
+                let order = &self.settings.active_workspace().recording_order;
+                recordings.sort_by(|a, b| {
+                    let a_index = order
+                        .iter()
+                        .position(|file_name| file_name == &a.file_name)
+                        .unwrap_or(usize::MAX);
+                    let b_index = order
+                        .iter()
+                        .position(|file_name| file_name == &b.file_name)
+                        .unwrap_or(usize::MAX);
+
+                    a_index
+                        .cmp(&b_index)
+                        .then_with(|| a.file_name.cmp(&b.file_name))
+                });
+            }
+        }
+
+        recordings
+    }
+
+    fn reorder_recording_over(&mut self, target_path: &Path) {
+        if self.recording_sort != RecordingSort::Custom {
+            return;
+        }
+
+        let Some(dragged_path) = self.dragging_recording.clone() else {
+            return;
+        };
+
+        if dragged_path == target_path {
+            return;
+        }
+
+        let Some(dragged_name) = file_name_string(&dragged_path) else {
+            return;
+        };
+        let Some(target_name) = file_name_string(target_path) else {
+            return;
+        };
+
+        self.normalize_recording_order();
+        let order = &mut self.settings.active_workspace_mut().recording_order;
+        let Some(from) = order
+            .iter()
+            .position(|file_name| file_name == &dragged_name)
+        else {
+            return;
+        };
+        let Some(to) = order.iter().position(|file_name| file_name == &target_name) else {
+            return;
+        };
+
+        let moved = order.remove(from);
+        let insert_at = if from < to { to.saturating_sub(1) } else { to };
+        order.insert(insert_at, moved);
+        self.save_settings();
+    }
+
+    fn open_recording(&mut self, path: PathBuf) -> Task<Message> {
+        let title = self
+            .recordings
+            .iter()
+            .find(|recording| recording.path == path)
+            .map(|recording| recording.title.clone())
+            .or_else(|| {
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .map(ToOwned::to_owned)
+            })
+            .unwrap_or_else(|| "recording".to_string());
+        let extension = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("mp4")
+            .to_ascii_lowercase();
+        let metadata = probe_video_metadata(&path);
+        let mut duration = self
+            .recordings
+            .iter()
+            .find(|recording| recording.path == path)
+            .and_then(|recording| recording.duration)
+            .or(metadata.duration)
+            .unwrap_or(Duration::ZERO);
+
+        let (mut video_width, mut video_height) = metadata.dimensions.unwrap_or((640, 360));
+        let video_url_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+        let (video, load_error) = match Url::from_file_path(&video_url_path) {
+            Ok(url) => match Video::new(&url) {
+                Ok(mut video) => {
+                    let (width, height) = video.size();
+
+                    if width > 0 && height > 0 {
+                        video_width = width as u32;
+                        video_height = height as u32;
+                    }
+
+                    let player_duration = video.duration();
+                    if !player_duration.is_zero() {
+                        duration = player_duration;
+                    }
+
+                    video.set_paused(true);
+
+                    (Some(video), None)
+                }
+                Err(error) => (None, Some(format!("Could not load video: {error}"))),
+            },
+            Err(()) => (
+                None,
+                Some("Could not create a file URL for this video.".to_string()),
+            ),
+        };
+
+        self.video_modal = Some(VideoModal {
+            path: path.clone(),
+            title,
+            extension,
+            video,
+            video_width,
+            video_height,
+            duration,
+            position: 0.0,
+            is_dragging: false,
+            resume_after_seek: false,
+            load_error,
+        });
+        self.recording_title_edit.clear();
+        self.is_recording_title_editing = false;
+        self.recording_title_error = None;
+
+        Task::none()
+    }
+
+    fn toggle_video_playback(&mut self) -> Task<Message> {
+        if let Some(modal) = self.video_modal.as_mut() {
+            if let Some(video) = modal.video.as_mut() {
+                if video.eos() || modal.position >= modal.duration.as_secs_f64() {
+                    if let Err(error) = video.seek(Duration::ZERO, false) {
+                        modal.load_error = Some(format!("Could not restart video: {error}"));
+                        return Task::none();
+                    }
+
+                    modal.position = 0.0;
+                }
+
+                video.set_paused(!video.paused());
+            }
+        }
+
+        Task::none()
+    }
+
+    fn seek_video_relative(&mut self, seconds: f64) -> Task<Message> {
+        if let Some(modal) = self.video_modal.as_mut() {
+            let Some(video) = modal.video.as_mut() else {
+                return Task::none();
+            };
+
+            let duration = modal.duration.as_secs_f64().max(0.0);
+            modal.position = (modal.position + seconds).clamp(0.0, duration);
+            modal.is_dragging = false;
+            modal.resume_after_seek = !video.paused();
+
+            if let Err(error) = video.seek(Duration::from_secs_f64(modal.position), false) {
+                modal.load_error = Some(format!("Could not seek video: {error}"));
+            }
+        }
+
+        Task::none()
+    }
+
+    fn save_recording_title(&mut self) -> Task<Message> {
+        let Some(modal) = self.video_modal.as_ref() else {
+            return Task::none();
+        };
+
+        let title = self.recording_title_edit.trim().to_string();
+        let extension = modal.extension.clone();
+
+        if let Some(error) = validate_recording_title(&title, &extension) {
+            self.recording_title_error = Some(error);
+            return Task::none();
+        }
+
+        if title == modal.title {
+            self.recording_title_edit.clear();
+            self.is_recording_title_editing = false;
+            self.recording_title_error = None;
+            return Task::none();
+        }
+
+        let old_path = modal.path.clone();
+        let new_file_name = format!("{title}.{extension}");
+        let new_path = old_path.with_file_name(&new_file_name);
+
+        if new_path.exists() {
+            self.recording_title_error =
+                Some("A recording with that name already exists.".to_string());
+            return Task::none();
+        }
+
+        if let Err(error) = fs::rename(&old_path, &new_path) {
+            self.recording_title_error = Some(format!("Could not rename recording: {error}"));
+            return Task::none();
+        }
+
+        let old_file_name = file_name_string(&old_path);
+        if let Some(modal) = self.video_modal.as_mut() {
+            modal.path = new_path.clone();
+            modal.title = title;
+        }
+
+        if let Some(old_file_name) = old_file_name {
+            let order = &mut self.settings.active_workspace_mut().recording_order;
+            if let Some(index) = order
+                .iter()
+                .position(|file_name| file_name == &old_file_name)
+            {
+                order[index] = new_file_name;
+            }
+        }
+
+        self.recording_title_edit.clear();
+        self.is_recording_title_editing = false;
+        self.recording_title_error = None;
+        self.save_settings();
+        self.load_recordings_task()
+    }
+
+    fn view(&self) -> Element<'_, Message> {
         let content = row![
             self.sidebar(),
             container(self.canvas())
@@ -1151,7 +1870,7 @@ impl Roton {
                 app,
                 event_blocker(
                     mouse_area(
-                        container(Space::with_width(Length::Fill).height(Length::Fill))
+                        container(Space::new().width(Length::Fill).height(Length::Fill))
                             .width(Length::Fill)
                             .height(Length::Fill)
                     )
@@ -1174,7 +1893,7 @@ impl Roton {
                 app,
                 event_blocker(
                     mouse_area(
-                        container(Space::with_width(Length::Fill).height(Length::Fill))
+                        container(Space::new().width(Length::Fill).height(Length::Fill))
                             .width(Length::Fill)
                             .height(Length::Fill)
                     )
@@ -1192,22 +1911,67 @@ impl Roton {
             app
         };
 
+        let app: Element<_> = if self.is_recording_sort_open {
+            stack![
+                app,
+                event_blocker(
+                    mouse_area(
+                        container(Space::new().width(Length::Fill).height(Length::Fill))
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                    )
+                    .on_press(Message::ToggleRecordingSortMenu)
+                ),
+                container(container(self.recording_sort_menu()).width(122))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(
+                        Padding::default()
+                            .top(RECORDING_SORT_MENU_TOP)
+                            .left(RECORDING_SORT_MENU_LEFT)
+                    )
+                    .align_x(alignment::Horizontal::Left)
+                    .align_y(alignment::Vertical::Top)
+            ]
+            .into()
+        } else {
+            app
+        };
+
+        let dialog_progress = ease_out(self.modal_progress);
+
         if self.workspace_name_action.is_some() {
             stack![
                 app,
-                dialog::backdrop(1.0, Message::CancelWorkspaceName),
-                container(mouse_area(self.workspace_name_modal()).on_press(Message::Noop))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .align_x(alignment::Horizontal::Center)
-                    .align_y(alignment::Vertical::Center)
+                dialog::backdrop(dialog_progress, Message::CancelWorkspaceName),
+                container(
+                    mouse_area(self.workspace_name_modal(dialog_progress)).on_press(Message::Noop)
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(alignment::Horizontal::Center)
+                .align_y(alignment::Vertical::Center)
+            ]
+            .into()
+        } else if self.show_delete_workspace_confirmation {
+            stack![
+                app,
+                dialog::backdrop(dialog_progress, Message::CancelDeleteWorkspace),
+                container(
+                    mouse_area(self.delete_workspace_confirmation(dialog_progress))
+                        .on_press(Message::Noop)
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(alignment::Horizontal::Center)
+                .align_y(alignment::Vertical::Center)
             ]
             .into()
         } else if self.show_close_confirmation {
             stack![
                 app,
-                dialog::backdrop(1.0, Message::Noop),
-                container(self.close_confirmation())
+                dialog::backdrop(dialog_progress, Message::Noop),
+                container(self.close_confirmation(dialog_progress))
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .align_x(alignment::Horizontal::Center)
@@ -1217,20 +1981,32 @@ impl Roton {
         } else if self.show_about_dialog {
             stack![
                 app,
-                dialog::backdrop(1.0, Message::CloseAboutRoton),
-                container(mouse_area(self.about_dialog()).on_press(Message::Noop))
+                dialog::backdrop(dialog_progress, Message::CloseAboutRoton),
+                container(mouse_area(self.about_dialog(dialog_progress)).on_press(Message::Noop))
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .align_x(alignment::Horizontal::Center)
                     .align_y(alignment::Vertical::Center)
             ]
             .into()
-        } else if let Some(kind) = self.selected_node {
-            let progress = ease_out(self.modal_progress);
+        } else if self.video_modal.is_some() {
             stack![
                 app,
-                dialog::backdrop(progress, Message::CloseModal),
-                container(mouse_area(self.modal(kind, progress)).on_press(Message::Noop))
+                dialog::backdrop(dialog_progress, Message::CloseModal),
+                container(
+                    mouse_area(self.recording_modal(dialog_progress)).on_press(Message::Noop)
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(alignment::Horizontal::Center)
+                .align_y(alignment::Vertical::Center)
+            ]
+            .into()
+        } else if let Some(kind) = self.selected_node {
+            stack![
+                app,
+                dialog::backdrop(dialog_progress, Message::CloseModal),
+                container(mouse_area(self.modal(kind, dialog_progress)).on_press(Message::Noop))
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .align_x(alignment::Horizontal::Center)
@@ -1242,8 +2018,11 @@ impl Roton {
         }
     }
 
-    fn close_confirmation(&self) -> Element<Message> {
-        let palette = self.workspace_theme.component_palette();
+    fn close_confirmation(&self, progress: f32) -> Element<'_, Message> {
+        let palette = self
+            .workspace_theme
+            .component_palette()
+            .scale_alpha(progress);
 
         dialog::panel(
             column![
@@ -1257,7 +2036,7 @@ impl Roton {
                         Some(Message::CancelClose),
                         palette,
                     ),
-                    Space::with_width(Length::Fill),
+                    Space::new().width(Length::Fill),
                     ui_button::themed_text_button(
                         "Stop and Close",
                         ButtonVariant::Danger,
@@ -1270,28 +2049,70 @@ impl Roton {
             ]
             .spacing(16),
             420.0,
-            1.0,
+            progress,
             palette,
         )
     }
 
-    fn about_dialog(&self) -> Element<Message> {
+    fn delete_workspace_confirmation(&self, progress: f32) -> Element<'_, Message> {
+        let palette = self
+            .workspace_theme
+            .component_palette()
+            .scale_alpha(progress);
+        let workspace_name = truncate_text(&self.settings.active_workspace().name, 34);
+
+        dialog::panel(
+            column![
+                text("Remove Workspace?").size(18),
+                text(format!("Remove \"{workspace_name}\" from Roton?")).size(13),
+                text("Recordings in its save folder will stay on disk.")
+                    .size(13)
+                    .color(palette.text_muted),
+                row![
+                    ui_button::themed_text_button(
+                        "Cancel",
+                        ButtonVariant::Secondary,
+                        Some(Message::CancelDeleteWorkspace),
+                        palette,
+                    ),
+                    Space::new().width(Length::Fill),
+                    ui_button::themed_text_button(
+                        "Remove",
+                        ButtonVariant::Danger,
+                        Some(Message::ConfirmDeleteWorkspace),
+                        palette,
+                    ),
+                ]
+                .spacing(10)
+                .align_y(alignment::Vertical::Center),
+            ]
+            .spacing(12),
+            420.0,
+            progress,
+            palette,
+        )
+    }
+
+    fn about_dialog(&self, progress: f32) -> Element<'_, Message> {
         let theme = self.workspace_theme;
-        let palette = theme.component_palette();
+        let palette = theme.component_palette().scale_alpha(progress);
         let close_style = {
             let is_hovered = self.is_modal_close_hovered;
             move |iced_theme: &Theme| {
-                if is_hovered {
-                    ghost_card_hovered(theme)
-                } else {
-                    ghost_card(iced_theme, theme)
-                }
+                fade_container_style(
+                    if is_hovered {
+                        ghost_card_hovered(theme)
+                    } else {
+                        ghost_card(iced_theme, theme)
+                    },
+                    progress,
+                )
             }
         };
         let detail_row = |label: &'static str, value: &'static str| {
             row![
                 text(label).size(12).color(palette.text_muted),
-                Space::with_width(Length::Fill),
+                Space::new().width(Length::Fill),
                 text(value).size(12).color(palette.text),
             ]
             .align_y(alignment::Vertical::Center)
@@ -1300,15 +2121,20 @@ impl Roton {
         dialog::panel(
             column![
                 row![
-                    image("assets/rotonicon.png").width(44).height(44),
+                    image("assets/rotonicon.png").width(44).height(44).opacity(progress),
                     column![
                         text("Roton").size(21),
                         text("Screen recorder").size(12).color(palette.text_muted),
                     ]
                     .spacing(4),
-                    Space::with_width(Length::Fill),
+                    Space::new().width(Length::Fill),
                     mouse_area(
-                        container(svg("assets/icons/x.svg").width(16).height(16))
+                        container(
+                            svg("assets/icons/x.svg")
+                                .width(16)
+                                .height(16)
+                                .opacity(progress),
+                        )
                             .padding(8)
                             .style(close_style)
                     )
@@ -1319,7 +2145,7 @@ impl Roton {
                 .spacing(12)
                 .align_y(alignment::Vertical::Center),
                 container(
-                    container(Space::with_height(1))
+                    container(Space::new().height(1))
                         .width(Length::Fill)
                         .style(move |_| component_styles::separator_with_palette(palette))
                 )
@@ -1334,7 +2160,7 @@ impl Roton {
                     .size(12)
                     .color(palette.text_muted),
                 row![
-                    Space::with_width(Length::Fill),
+                    Space::new().width(Length::Fill),
                     ui_button::themed_text_button(
                         "Close",
                         ButtonVariant::Secondary,
@@ -1346,12 +2172,204 @@ impl Roton {
             ]
             .spacing(14),
             430.0,
-            1.0,
+            progress,
             palette,
         )
     }
 
-    fn sidebar(&self) -> Element<Message> {
+    fn recording_modal(&self, progress: f32) -> Element<'_, Message> {
+        let Some(modal) = self.video_modal.as_ref() else {
+            return Space::new().height(0).into();
+        };
+
+        let theme = self.workspace_theme;
+        let palette = theme.component_palette().scale_alpha(progress);
+        let close_style = {
+            let is_hovered = self.is_modal_close_hovered;
+            move |iced_theme: &Theme| {
+                fade_container_style(
+                    if is_hovered {
+                        ghost_card_hovered(theme)
+                    } else {
+                        ghost_card(iced_theme, theme)
+                    },
+                    progress,
+                )
+            }
+        };
+        let title_error: Element<_> = self
+            .recording_title_error
+            .as_deref()
+            .map(|error| {
+                text(error)
+                    .size(12)
+                    .color(Color::from_rgb8(232, 126, 126).scale_alpha(progress))
+                    .into()
+            })
+            .unwrap_or_else(|| Space::new().height(0).into());
+
+        let title_row: Element<_> = if self.is_recording_title_editing {
+            row![
+                textbox::field(
+                    "Recording title",
+                    &self.recording_title_edit,
+                    "recording-title",
+                    Message::RecordingTitleChanged,
+                    Message::SaveRecordingTitle,
+                    palette,
+                )
+                .width(Length::Fill),
+                text(format!(".{}", modal.extension))
+                    .size(13)
+                    .color(palette.text),
+                ui_button::themed_compact_icon_button(
+                    "assets/icons/x.svg",
+                    ButtonVariant::Secondary,
+                    Some(Message::CancelRenameRecording),
+                    palette,
+                ),
+                button(
+                    row![
+                        svg("assets/icons/check.svg").width(14).height(14),
+                        text("Save").size(13),
+                    ]
+                    .spacing(6)
+                    .align_y(alignment::Vertical::Center),
+                )
+                .padding([10, 12])
+                .style({
+                    let accent = theme.accent().scale_alpha(progress);
+                    let hover = theme.accent_hover().scale_alpha(progress);
+                    move |_, status| recording_save_button_style(status, accent, hover)
+                })
+                .on_press(Message::SaveRecordingTitle),
+            ]
+            .spacing(8)
+            .align_y(alignment::Vertical::Center)
+            .into()
+        } else {
+            let file_name = format!("{}.{}", modal.title, modal.extension);
+            row![
+                mouse_area(
+                    row![
+                        text(truncate_text(&file_name, 54)).size(14),
+                        svg("assets/icons/pencil-line.svg").width(14).height(14),
+                    ]
+                    .spacing(8)
+                    .align_y(alignment::Vertical::Center)
+                )
+                .interaction(mouse::Interaction::Pointer)
+                .on_press(Message::StartRenameRecording),
+                Space::new().width(Length::Fill),
+                mouse_area(
+                    container(
+                        svg("assets/icons/x.svg")
+                            .width(16)
+                            .height(16)
+                            .opacity(progress),
+                    )
+                    .padding(8)
+                    .style(close_style)
+                )
+                .on_enter(Message::HoverModalClose(true))
+                .on_exit(Message::HoverModalClose(false))
+                .on_press(Message::CloseModal),
+            ]
+            .align_y(alignment::Vertical::Center)
+            .into()
+        };
+
+        let (video_width, video_height, panel_width) =
+            video_modal_dimensions(modal.video_width, modal.video_height);
+
+        let video_surface: Element<_> = if let Some(video) = modal.video.as_ref() {
+            container(
+                VideoPlayer::new(video)
+                    .width(video_width)
+                    .height(video_height)
+                    .content_fit(ContentFit::Contain)
+                    .on_new_frame(Message::VideoFrameRendered)
+                    .on_end_of_stream(Message::VideoEnded)
+                    .on_error(|error| Message::VideoError(error.to_string())),
+            )
+            .width(video_width)
+            .height(video_height)
+            .align_x(alignment::Horizontal::Center)
+            .align_y(alignment::Vertical::Center)
+            .style(move |_| video_surface_style(palette))
+            .into()
+        } else {
+            let message = modal
+                .load_error
+                .as_deref()
+                .unwrap_or("Could not load this video.");
+
+            container(
+                column![
+                    svg("assets/icons/file-video-camera.svg")
+                        .width(34)
+                        .height(34),
+                    text(message).size(12).color(palette.text_muted),
+                ]
+                .spacing(10)
+                .align_x(alignment::Horizontal::Center),
+            )
+            .width(video_width)
+            .height(video_height)
+            .align_x(alignment::Horizontal::Center)
+            .align_y(alignment::Vertical::Center)
+            .style(move |_| video_surface_style(palette))
+            .into()
+        };
+
+        let duration = modal.duration;
+        let duration_secs = duration.as_secs_f64().max(0.1);
+        let position = modal.position.clamp(0.0, duration_secs);
+        let is_playing = modal.video.as_ref().is_some_and(|video| !video.paused());
+        let play_icon = if !is_playing {
+            "assets/icons/play.svg"
+        } else {
+            "assets/icons/pause.svg"
+        };
+
+        dialog::panel(
+            column![
+                title_row,
+                title_error,
+                video_surface,
+                row![
+                    ui_button::themed_compact_icon_button(
+                        play_icon,
+                        ButtonVariant::Secondary,
+                        modal
+                            .video
+                            .is_some()
+                            .then_some(Message::ToggleVideoPlayback),
+                        palette,
+                    ),
+                    text(format!(
+                        "{} / {}",
+                        format_duration(Duration::from_secs_f64(position)),
+                        format_duration(duration),
+                    ))
+                    .size(12)
+                    .color(palette.text)
+                    .width(78),
+                    slider(0.0..=duration_secs, position, Message::SeekVideo)
+                        .step(0.1)
+                        .on_release(Message::SeekVideoReleased),
+                ]
+                .spacing(10)
+                .align_y(alignment::Vertical::Center),
+            ]
+            .spacing(10),
+            panel_width,
+            progress,
+            palette,
+        )
+    }
+
+    fn sidebar(&self) -> Element<'_, Message> {
         let status = if self.is_paused {
             "Paused"
         } else if self.is_recording {
@@ -1441,44 +2459,235 @@ impl Roton {
         };
 
         let status_row = row![
-            text(status).size(12),
-            Space::with_width(Length::Fill),
-            text(format!(
-                "{:02}.{:02}:00",
-                self.elapsed / 60,
-                self.elapsed % 60
-            ))
-            .size(12),
+            text(status)
+                .size(12)
+                .color(self.workspace_theme.component_palette().text_muted),
+            Space::new().width(Length::Fill),
+            text(format_elapsed(self.elapsed))
+                .size(12)
+                .color(self.workspace_theme.component_palette().text),
         ]
         .width(Length::Fill)
         .align_y(alignment::Vertical::Center);
+        let palette = self.workspace_theme.component_palette();
+        let search_row = row![
+            textbox::field(
+                "Search...",
+                &self.recording_search,
+                "recording-search",
+                Message::RecordingSearchChanged,
+                Message::Noop,
+                palette,
+            )
+            .width(Length::Fill),
+            ui_button::themed_compact_icon_button(
+                "assets/icons/list-filter.svg",
+                ButtonVariant::Side,
+                Some(Message::ToggleRecordingSortMenu),
+                palette,
+            ),
+        ]
+        .spacing(8)
+        .align_y(alignment::Vertical::Center);
 
-        let sidebar = container(
-            column![
-                self.workspace_selector(),
-                controls,
-                status_row,
-                Space::with_height(Length::Fill),
-                column![
-                    text(format!("Roton v{APP_VERSION}")).size(12),
-                    text("By Ferdinan Iydheko").size(11),
-                ]
-                .spacing(4),
-            ]
-            .spacing(16),
+        let header = container(
+            column![self.workspace_selector(), controls, status_row, search_row,].spacing(14),
         )
-        .width(210)
+        .width(Length::Fill)
+        .padding(Padding::default().top(18).right(18).bottom(10).left(18));
+
+        let list = scrollable(
+            mouse_area(
+                container(self.recording_list())
+                    .width(Length::Fill)
+                    .padding(Padding::default().right(18).bottom(18).left(18)),
+            )
+            .on_scroll(Message::ScrollRecordings),
+        )
+        .id("recording-list")
+        .direction(scrollable::Direction::Vertical(
+            scrollable::Scrollbar::default().width(6).scroller_width(6),
+        ))
+        .style(recording_scrollable_style)
         .height(Length::Fill)
-        .padding(18)
-        .style({
-            let theme = self.workspace_theme;
-            move |_| sidebar(theme)
-        });
+        .width(Length::Fill);
+
+        let sidebar = container(column![header, list].spacing(0))
+            .width(SIDEBAR_WIDTH)
+            .height(Length::Fill)
+            .style({
+                let theme = self.workspace_theme;
+                move |_| sidebar(theme)
+            });
 
         sidebar.into()
     }
 
-    fn workspace_selector(&self) -> Element<Message> {
+    fn recording_list(&self) -> Element<'_, Message> {
+        let palette = self.workspace_theme.component_palette();
+        let visible = self.visible_recordings();
+
+        if visible.is_empty() {
+            let message = if self.recording_search.trim().is_empty() {
+                "No recordings"
+            } else {
+                "No matches"
+            };
+
+            return container(
+                column![
+                    svg("assets/icons/file-video-camera.svg")
+                        .width(28)
+                        .height(28),
+                    text(message).size(12).color(palette.text_muted),
+                ]
+                .spacing(8)
+                .align_x(alignment::Horizontal::Center),
+            )
+            .width(Length::Fill)
+            .height(130)
+            .align_x(alignment::Horizontal::Center)
+            .align_y(alignment::Vertical::Center)
+            .style(move |_| recording_empty_state(palette))
+            .into();
+        }
+
+        visible
+            .into_iter()
+            .fold(column![].spacing(10), |column, recording| {
+                column.push(self.recording_item(recording))
+            })
+            .into()
+    }
+
+    fn recording_item(&self, recording: &RecordingItem) -> Element<'_, Message> {
+        let palette = self.workspace_theme.component_palette();
+        let path = recording.path.clone();
+        let is_dragging = self.dragging_recording.as_ref() == Some(&recording.path);
+        let is_hovered = self.hovered_recording.as_ref() == Some(&recording.path);
+        let title = truncate_text(&recording.title, 18);
+        let extension = recording.extension.clone();
+        let thumbnail_path = recording.thumbnail_path.clone();
+        let duration = recording
+            .duration
+            .map(format_duration)
+            .unwrap_or_else(|| "--:--".to_string());
+        let thumbnail: Element<_> = if let Some(thumbnail_path) = thumbnail_path {
+            container(
+                image(thumbnail_path.to_string_lossy().to_string())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .content_fit(ContentFit::Cover),
+            )
+            .width(72)
+            .height(46)
+            .style(move |_| recording_thumbnail_style(palette))
+            .into()
+        } else {
+            container(
+                svg("assets/icons/file-video-camera.svg")
+                    .width(24)
+                    .height(24),
+            )
+            .width(72)
+            .height(46)
+            .align_x(alignment::Horizontal::Center)
+            .align_y(alignment::Vertical::Center)
+            .style(move |_| recording_thumbnail_style(palette))
+            .into()
+        };
+
+        let card = container(
+            row![
+                thumbnail,
+                column![
+                    text(title).size(13),
+                    text(duration).size(11).color(palette.text_muted),
+                    text(extension).size(11).color(palette.text_muted),
+                ]
+                .spacing(3)
+                .width(Length::Fill),
+            ]
+            .spacing(10)
+            .align_y(alignment::Vertical::Center),
+        )
+        .padding(Padding::default().top(8).right(10).bottom(8).left(8))
+        .width(Length::Fill)
+        .style({
+            let theme = self.workspace_theme;
+            move |_| recording_item_style(theme, is_dragging, is_hovered)
+        });
+
+        if self.recording_sort == RecordingSort::Custom {
+            let move_path = path.clone();
+            mouse_area(card)
+                .interaction(if is_dragging {
+                    mouse::Interaction::Grabbing
+                } else {
+                    mouse::Interaction::Grab
+                })
+                .on_enter(Message::HoverRecording(Some(path.clone())))
+                .on_exit(Message::HoverRecording(None))
+                .on_press(Message::StartRecordingDrag(path.clone()))
+                .on_move(move |_| Message::DragRecordingOver(move_path.clone()))
+                .on_release(Message::FinishRecordingDrag)
+                .on_double_click(Message::OpenRecording(path))
+                .into()
+        } else {
+            mouse_area(card)
+                .interaction(mouse::Interaction::Pointer)
+                .on_enter(Message::HoverRecording(Some(path.clone())))
+                .on_exit(Message::HoverRecording(None))
+                .on_press(Message::OpenRecording(path))
+                .into()
+        }
+    }
+
+    fn recording_sort_menu(&self) -> Element<'_, Message> {
+        let palette = self.workspace_theme.component_palette();
+
+        let items = RecordingSort::ALL
+            .into_iter()
+            .fold(column![].spacing(0), |column, sort| {
+                let is_selected = sort == self.recording_sort;
+                let marker: Element<_> = if is_selected {
+                    svg("assets/icons/check.svg").width(14).height(14).into()
+                } else {
+                    Space::new().width(14).height(14).into()
+                };
+
+                column.push(
+                    button(
+                        row![
+                            text(sort.label()).size(12),
+                            Space::new().width(Length::Fill),
+                            marker,
+                        ]
+                        .spacing(8)
+                        .align_y(alignment::Vertical::Center),
+                    )
+                    .padding([8, 10])
+                    .width(Length::Fill)
+                    .style(move |_, status| {
+                        if is_selected {
+                            component_styles::dropdown_option_selected_with_palette(status, palette)
+                        } else {
+                            component_styles::dropdown_option_with_palette(status, palette)
+                        }
+                    })
+                    .on_press(Message::SelectRecordingSort(sort)),
+                )
+            });
+
+        event_blocker(
+            container(items)
+                .padding([4, 0])
+                .width(Length::Fill)
+                .style(move |_| component_styles::context_menu_with_palette(palette)),
+        )
+    }
+
+    fn workspace_selector(&self) -> Element<'_, Message> {
         let locked = self.is_config_locked();
 
         row![
@@ -1517,7 +2726,7 @@ impl Roton {
         .into()
     }
 
-    fn workspace_actions_menu(&self) -> Element<Message> {
+    fn workspace_actions_menu(&self) -> Element<'_, Message> {
         let palette = self.workspace_theme.component_palette();
         let menu_item = |label: &'static str, on_press: Option<Message>| {
             button(
@@ -1544,7 +2753,7 @@ impl Roton {
             container(
                 row![
                     text("Color Theme").size(12).color(palette.text_muted),
-                    Space::with_width(Length::Fill),
+                    Space::new().width(Length::Fill),
                     text(self.workspace_theme.label())
                         .size(12)
                         .color(palette.text),
@@ -1558,7 +2767,7 @@ impl Roton {
                 .padding(Padding::default().right(10).bottom(8).left(10))
                 .width(Length::Fill),
             container(
-                container(Space::with_height(1))
+                container(Space::new().height(1))
                     .width(Length::Fill)
                     .style(move |_| component_styles::separator_with_palette(palette))
             )
@@ -1569,7 +2778,7 @@ impl Roton {
         .spacing(0);
 
         let items = if self.can_delete_active_workspace() {
-            items.push(menu_item("Delete", Some(Message::DeleteWorkspace)))
+            items.push(menu_item("Remove", Some(Message::DeleteWorkspace)))
         } else {
             items
         };
@@ -1587,7 +2796,7 @@ impl Roton {
         let marker: Element<_> = if is_selected {
             svg("assets/icons/check.svg").width(13).height(13).into()
         } else {
-            Space::with_width(13).height(13).into()
+            Space::new().width(13).height(13).into()
         };
 
         mouse_area(
@@ -1602,7 +2811,11 @@ impl Roton {
         .into()
     }
 
-    fn workspace_name_modal(&self) -> Element<Message> {
+    fn workspace_name_modal(&self, progress: f32) -> Element<'_, Message> {
+        let palette = self
+            .workspace_theme
+            .component_palette()
+            .scale_alpha(progress);
         let is_create = self.workspace_name_action == Some(WorkspaceNameAction::Create);
         let title = if is_create {
             "New Workspace"
@@ -1610,7 +2823,7 @@ impl Roton {
             "Rename Workspace"
         };
         let description = if is_create {
-            "Recordings start in a dedicated folder under your Videos directory."
+            "Recordings start in a dedicated folder under ~/Videos/Roton"
         } else {
             "Renaming keeps the existing recordings folder unchanged."
         };
@@ -1621,10 +2834,10 @@ impl Roton {
             .map(|error| {
                 text(error)
                     .size(12)
-                    .color(Color::from_rgb8(232, 126, 126))
+                    .color(Color::from_rgb8(232, 126, 126).scale_alpha(progress))
                     .into()
             })
-            .unwrap_or_else(|| Space::with_height(0).into());
+            .unwrap_or_else(|| Space::new().height(0).into());
 
         dialog::panel(
             column![
@@ -1636,22 +2849,22 @@ impl Roton {
                     "workspace-name",
                     Message::WorkspaceNameChanged,
                     Message::ConfirmWorkspaceName,
-                    self.workspace_theme.component_palette(),
+                    palette,
                 ),
                 error,
                 row![
-                    Space::with_width(Length::Fill),
+                    Space::new().width(Length::Fill),
                     ui_button::themed_text_button(
                         "Cancel",
                         ButtonVariant::Secondary,
                         Some(Message::CancelWorkspaceName),
-                        self.workspace_theme.component_palette(),
+                        palette,
                     ),
                     ui_button::accent_text_button(
                         confirm_label,
                         Some(Message::ConfirmWorkspaceName),
-                        self.workspace_theme.accent(),
-                        self.workspace_theme.accent_hover(),
+                        self.workspace_theme.accent().scale_alpha(progress),
+                        self.workspace_theme.accent_hover().scale_alpha(progress),
                     ),
                 ]
                 .spacing(8)
@@ -1659,15 +2872,15 @@ impl Roton {
             ]
             .spacing(12),
             420.0,
-            1.0,
-            self.workspace_theme.component_palette(),
+            progress,
+            palette,
         )
     }
 
-    fn titlebar(&self) -> Element<Message> {
+    fn titlebar(&self) -> Element<'_, Message> {
         let titlebar_action = |action, icon: &'static str, icon_size: u16, message| {
             mouse_area(
-                container(image(icon).width(icon_size).height(icon_size))
+                container(image(icon).width(icon_size as u32).height(icon_size as u32))
                     .width(34)
                     .height(34)
                     .align_x(alignment::Horizontal::Center)
@@ -1726,9 +2939,9 @@ impl Roton {
                             .style(titlebar_icon_button)
                     )
                     .on_press(Message::ToggleTitlebarMenu),
-                    Space::with_width(Length::Fill),
+                    Space::new().width(Length::Fill),
                     text("Roton").size(15),
-                    Space::with_width(Length::Fill),
+                    Space::new().width(Length::Fill),
                     right_controls,
                 ]
                 .align_y(alignment::Vertical::Center)
@@ -1745,13 +2958,13 @@ impl Roton {
         .into()
     }
 
-    fn titlebar_menu(&self) -> Element<Message> {
+    fn titlebar_menu(&self) -> Element<'_, Message> {
         let theme = self.workspace_theme;
         let palette = theme.component_palette();
         let item = |index, label: &'static str, message| {
             mouse_area(
                 container(
-                    row![Space::with_width(25), text(label).size(13)]
+                    row![Space::new().width(25), text(label).size(13)]
                         .align_y(alignment::Vertical::Center),
                 )
                 .padding([9, 10])
@@ -1774,7 +2987,7 @@ impl Roton {
 
         let separator = || {
             container(
-                container(Space::with_height(1))
+                container(Space::new().height(1))
                     .width(Length::Fill)
                     .style(move |_| component_styles::separator_with_palette(palette)),
             )
@@ -1785,7 +2998,7 @@ impl Roton {
         let minimal_marker: Element<_> = if self.is_minimal_window {
             svg("assets/icons/check.svg").width(15).height(15).into()
         } else {
-            Space::with_width(15).height(15).into()
+            Space::new().width(15).height(15).into()
         };
 
         let minimal_item = mouse_area(
@@ -1814,7 +3027,7 @@ impl Roton {
         let tray_marker: Element<_> = if self.settings.minimize_to_tray {
             svg("assets/icons/check.svg").width(15).height(15).into()
         } else {
-            Space::with_width(15).height(15).into()
+            Space::new().width(15).height(15).into()
         };
 
         let tray_item = mouse_area(
@@ -1868,7 +3081,7 @@ impl Roton {
         .into()
     }
 
-    fn canvas(&self) -> Element<Message> {
+    fn canvas(&self) -> Element<'_, Message> {
         let nodes = container(
             column![
                 container(self.node(NodeKind::Output))
@@ -1903,7 +3116,7 @@ impl Roton {
             .into()
     }
 
-    fn node(&self, kind: NodeKind) -> Element<Message> {
+    fn node(&self, kind: NodeKind) -> Element<'_, Message> {
         let detail = self.node_detail(kind);
         let icon = if kind == NodeKind::Mic && self.mic_mode == AudioMode::Mute {
             "assets/icons/mic-off.svg"
@@ -1979,22 +3192,31 @@ impl Roton {
         }
     }
 
-    fn modal(&self, kind: NodeKind, progress: f32) -> Element<Message> {
+    fn modal(&self, kind: NodeKind, progress: f32) -> Element<'_, Message> {
+        let palette = self
+            .workspace_theme
+            .component_palette()
+            .scale_alpha(progress);
         let body: Element<_> = match kind {
             NodeKind::Output => column![
                 text("Format").size(13),
-                self.dropdown(&self.selected_format, &self.formats, Message::SelectFormat),
+                self.dropdown_with_palette(
+                    &self.selected_format,
+                    &self.formats,
+                    Message::SelectFormat,
+                    palette,
+                ),
                 text("Save Folder").size(13),
                 row![
                     textbox::readonly(
                         truncate_text(&self.settings.active_workspace().save_path, 38),
-                        self.workspace_theme.component_palette(),
+                        palette,
                     ),
                     ui_button::themed_text_button(
                         "Choose",
                         ButtonVariant::Secondary,
                         (!self.is_config_locked()).then_some(Message::ChooseOutputFolder),
-                        self.workspace_theme.component_palette(),
+                        palette,
                     ),
                 ]
                 .spacing(8)
@@ -2004,10 +3226,11 @@ impl Roton {
             .into(),
             NodeKind::Screen => column![
                 text("Monitor").size(13),
-                self.dropdown(
+                self.dropdown_with_palette(
                     self.selected_monitor.as_deref().unwrap_or("Select monitor"),
                     &self.monitors,
                     Message::SelectMonitor,
+                    palette,
                 ),
                 self.switch_row(
                     "Show Cursor",
@@ -2016,6 +3239,7 @@ impl Roton {
                     Message::ToggleShowCursor,
                     Message::HoverShowCursor(true),
                     Message::HoverShowCursor(false),
+                    progress,
                 ),
                 self.switch_row(
                     "Record Screen Sound",
@@ -2024,22 +3248,18 @@ impl Roton {
                     Message::ToggleScreenSound,
                     Message::HoverScreenSound(true),
                     Message::HoverScreenSound(false),
+                    progress,
                 ),
                 row![
-                    self.screen_mode_button(ScreenMode::Fullscreen),
-                    self.screen_mode_button(ScreenMode::SelectArea),
+                    self.screen_mode_button(ScreenMode::Fullscreen, progress),
+                    self.screen_mode_button(ScreenMode::SelectArea, progress),
                 ]
                 .spacing(10),
                 if self.screen_mode == ScreenMode::SelectArea {
-                    Element::<Message>::from(ui_button::accent_fill_text_button(
-                        "Select Area",
-                        (!self.is_config_locked()).then_some(Message::SelectArea),
-                        self.workspace_theme.accent(),
-                        self.workspace_theme.accent_hover(),
-                    ))
+                    self.screen_area_panel(palette)
                 } else {
                     Element::<Message>::from(
-                        mouse_area(container(Space::with_height(0))).on_press(Message::Noop),
+                        mouse_area(container(Space::new().height(0))).on_press(Message::Noop),
                     )
                 },
             ]
@@ -2047,12 +3267,13 @@ impl Roton {
             .into(),
             NodeKind::Mic => column![
                 text("Microphone").size(13),
-                self.dropdown(
+                self.dropdown_with_palette(
                     self.selected_mic.as_deref().unwrap_or("Select microphone"),
                     &self.mics,
                     Message::SelectMic,
+                    palette,
                 ),
-                self.mic_toggle_button(),
+                self.mic_toggle_button(progress),
             ]
             .spacing(12)
             .into(),
@@ -2062,21 +3283,26 @@ impl Roton {
             column![
                 row![
                     text(format!("{} Config", kind.title())).size(18),
-                    Space::with_width(Length::Fill),
+                    Space::new().width(Length::Fill),
                     mouse_area(
-                        container(svg("assets/icons/x.svg").width(16).height(16))
-                            .padding(8)
-                            .style({
-                                let theme = self.workspace_theme;
-                                let is_hovered = self.is_modal_close_hovered;
-                                move |iced_theme| {
-                                    if is_hovered {
-                                        ghost_card_hovered(theme)
-                                    } else {
-                                        ghost_card(iced_theme, theme)
-                                    }
+                        container(
+                            svg("assets/icons/x.svg")
+                                .width(16)
+                                .height(16)
+                                .opacity(progress),
+                        )
+                        .padding(8)
+                        .style({
+                            let theme = self.workspace_theme;
+                            let is_hovered = self.is_modal_close_hovered;
+                            move |iced_theme| {
+                                if is_hovered {
+                                    ghost_card_hovered(theme)
+                                } else {
+                                    ghost_card(iced_theme, theme)
                                 }
-                            })
+                            }
+                        })
                     )
                     .on_enter(Message::HoverModalClose(true))
                     .on_exit(Message::HoverModalClose(false))
@@ -2088,30 +3314,56 @@ impl Roton {
             .spacing(18),
             460.0,
             progress,
-            self.workspace_theme.component_palette(),
+            palette,
         )
     }
 
-    fn screen_mode_button(&self, mode: ScreenMode) -> Element<Message> {
+    fn screen_mode_button(&self, mode: ScreenMode, progress: f32) -> Element<'_, Message> {
         let icon = match mode {
             ScreenMode::Fullscreen => "assets/icons/fullscreen.svg",
             ScreenMode::SelectArea => "assets/icons/square-dashed-mouse-pointer.svg",
+        };
+        let palette = self
+            .workspace_theme
+            .component_palette()
+            .scale_alpha(progress);
+        let subtitle = match mode {
+            ScreenMode::Fullscreen => self
+                .selected_monitor_output()
+                .unwrap_or_else(|| "Whole monitor".to_string()),
+            ScreenMode::SelectArea => self
+                .selected_area
+                .as_deref()
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| "Choose area".to_string()),
         };
         let theme = self.workspace_theme;
         let locked = self.is_config_locked();
         let is_selected = self.screen_mode == mode;
         let is_hovered = self.hovered_screen_mode == Some(mode);
+        let on_press = if locked {
+            Message::Noop
+        } else if mode == ScreenMode::SelectArea && self.selected_area.is_none() {
+            Message::SelectArea
+        } else {
+            Message::SelectScreenMode(mode)
+        };
 
         mouse_area(
             container(
                 column![
-                    svg(icon).width(54).height(54),
+                    svg(icon).width(48).height(48).opacity(progress),
                     text(mode.label())
                         .size(12)
                         .width(Length::Fill)
                         .align_x(alignment::Horizontal::Center),
+                    text(truncate_text(&subtitle, 24))
+                        .size(11)
+                        .color(palette.text_muted)
+                        .width(Length::Fill)
+                        .align_x(alignment::Horizontal::Center),
                 ]
-                .spacing(12)
+                .spacing(8)
                 .width(Length::Fill)
                 .align_x(alignment::Horizontal::Center),
             )
@@ -2121,28 +3373,60 @@ impl Roton {
             .align_x(alignment::Horizontal::Center)
             .align_y(alignment::Vertical::Center)
             .style(move |iced_theme| {
-                if locked {
-                    mode_card_disabled(iced_theme)
-                } else if is_selected {
-                    selected_mode_card(theme)
-                } else if is_hovered {
-                    node_card_hovered(theme)
-                } else {
-                    node_card(theme)
-                }
+                fade_container_style(
+                    if locked {
+                        mode_card_disabled(iced_theme)
+                    } else if is_selected {
+                        selected_mode_card(theme)
+                    } else if is_hovered {
+                        node_card_hovered(theme)
+                    } else {
+                        node_card(theme)
+                    },
+                    progress,
+                )
             }),
         )
         .on_enter(Message::HoverScreenMode(Some(mode)))
         .on_exit(Message::HoverScreenMode(None))
-        .on_press(if locked {
-            Message::Noop
-        } else {
-            Message::SelectScreenMode(mode)
-        })
+        .on_press(on_press)
         .into()
     }
 
-    fn mic_toggle_button(&self) -> Element<Message> {
+    fn screen_area_panel(&self, palette: component_styles::Palette) -> Element<'_, Message> {
+        let locked = self.is_config_locked();
+        let area = self.selected_area.as_deref().unwrap_or("Not selected");
+        let action_label = if self.selected_area.is_some() {
+            "Change"
+        } else {
+            "Choose"
+        };
+
+        container(
+            row![
+                column![
+                    text("Area").size(12).color(palette.text_muted),
+                    text(truncate_text(area, 42)).size(13).color(palette.text),
+                ]
+                .spacing(4),
+                Space::new().width(Length::Fill),
+                ui_button::themed_text_button(
+                    action_label,
+                    ButtonVariant::Secondary,
+                    (!locked).then_some(Message::SelectArea),
+                    palette,
+                ),
+            ]
+            .spacing(10)
+            .align_y(alignment::Vertical::Center),
+        )
+        .padding([10, 12])
+        .width(Length::Fill)
+        .style(move |_| component_styles::input_surface_with_palette(palette))
+        .into()
+    }
+
+    fn mic_toggle_button(&self, progress: f32) -> Element<'_, Message> {
         let next = if self.mic_mode == AudioMode::Mic {
             AudioMode::Mute
         } else {
@@ -2166,7 +3450,7 @@ impl Roton {
         mouse_area(
             container(
                 column![
-                    svg(icon).width(54).height(54),
+                    svg(icon).width(54).height(54).opacity(progress),
                     text(self.mic_mode.label())
                         .size(12)
                         .width(Length::Fill)
@@ -2186,15 +3470,18 @@ impl Roton {
             .align_x(alignment::Horizontal::Center)
             .align_y(alignment::Vertical::Center)
             .style(move |iced_theme| {
-                if locked {
-                    mode_card_disabled(iced_theme)
-                } else if is_active {
-                    selected_mode_card(theme)
-                } else if is_hovered {
-                    node_card_hovered(theme)
-                } else {
-                    node_card(theme)
-                }
+                fade_container_style(
+                    if locked {
+                        mode_card_disabled(iced_theme)
+                    } else if is_active {
+                        selected_mode_card(theme)
+                    } else if is_hovered {
+                        node_card_hovered(theme)
+                    } else {
+                        node_card(theme)
+                    },
+                    progress,
+                )
             }),
         )
         .on_enter(Message::HoverMicToggle(true))
@@ -2215,32 +3502,38 @@ impl Roton {
         on_press: Message,
         on_enter: Message,
         on_exit: Message,
-    ) -> Element<Message> {
+        progress: f32,
+    ) -> Element<'_, Message> {
         let locked = self.is_config_locked();
         let theme = self.workspace_theme;
         container(
             row![
                 text(label).size(13),
-                Space::with_width(Length::Fill),
+                Space::new().width(Length::Fill),
                 mouse_area(
                     container(
                         row![
                             if is_active {
-                                Space::with_width(Length::Fill)
+                                Space::new().width(Length::Fill)
                             } else {
-                                Space::with_width(0)
+                                Space::new().width(0)
                             },
-                            container(Space::with_width(16).height(16)).style(if locked {
-                                switch_knob_disabled
-                            } else if is_active {
-                                switch_knob_active
-                            } else {
-                                switch_knob
+                            container(Space::new().width(16).height(16)).style(move |theme| {
+                                fade_container_style(
+                                    if locked {
+                                        switch_knob_disabled(theme)
+                                    } else if is_active {
+                                        switch_knob_active(theme)
+                                    } else {
+                                        switch_knob(theme)
+                                    },
+                                    progress,
+                                )
                             }),
                             if is_active {
-                                Space::with_width(0)
+                                Space::new().width(0)
                             } else {
-                                Space::with_width(Length::Fill)
+                                Space::new().width(Length::Fill)
                             },
                         ]
                         .align_y(alignment::Vertical::Center)
@@ -2250,17 +3543,17 @@ impl Roton {
                     .height(22)
                     .style(move |iced_theme| {
                         if locked {
-                            switch_track_disabled(iced_theme)
+                            fade_container_style(switch_track_disabled(iced_theme), progress)
                         } else if is_active {
                             if is_hovered {
-                                switch_track_active_hovered(theme)
+                                fade_container_style(switch_track_active_hovered(theme), progress)
                             } else {
-                                switch_track_active(theme)
+                                fade_container_style(switch_track_active(theme), progress)
                             }
                         } else if is_hovered {
-                            switch_track_hovered(iced_theme)
+                            fade_container_style(switch_track_hovered(iced_theme), progress)
                         } else {
-                            switch_track(iced_theme)
+                            fade_container_style(switch_track(iced_theme), progress)
                         }
                     })
                 )
@@ -2272,16 +3565,17 @@ impl Roton {
         )
         .padding([8, 0])
         .width(Length::Fill)
-        .style(switch_row)
+        .style(move |theme| fade_container_style(switch_row(theme), progress))
         .into()
     }
 
-    fn dropdown(
+    fn dropdown_with_palette(
         &self,
         selected: &str,
         options: &[String],
         on_select: fn(String) -> Message,
-    ) -> Element<Message> {
+        palette: component_styles::Palette,
+    ) -> Element<'_, Message> {
         dropdown::select(
             selected,
             options
@@ -2289,7 +3583,7 @@ impl Roton {
                 .map(|option| OptionItem::new(option, on_select(option.clone())).into()),
             36,
             self.is_config_locked(),
-            self.workspace_theme.component_palette(),
+            palette,
         )
     }
 }
@@ -2338,12 +3632,19 @@ fn connector_svg_handle(theme: WorkspaceTheme) -> svg::Handle {
     svg::Handle::from_memory(markup.into_bytes())
 }
 
+fn with_latest_window(
+    action: impl Fn(window::Id) -> Task<Message> + Send + 'static,
+) -> Task<Message> {
+    window::latest().and_then(action)
+}
+
 fn panel(theme: WorkspaceTheme) -> container::Style {
     container::Style {
         background: Some(theme.app_background().into()),
         text_color: Some(Color::from_rgb8(224, 222, 216)),
         border: border::rounded(7).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2353,6 +3654,7 @@ fn sidebar(theme: WorkspaceTheme) -> container::Style {
         text_color: Some(Color::from_rgb8(224, 222, 216)),
         border: border::width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2362,6 +3664,7 @@ fn titlebar(theme: WorkspaceTheme) -> container::Style {
         text_color: Some(Color::from_rgb8(236, 234, 228)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2371,6 +3674,7 @@ fn titlebar_close(_: &Theme) -> container::Style {
         text_color: Some(Color::from_rgb8(214, 212, 205)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2380,6 +3684,7 @@ fn titlebar_close_hovered(_: &Theme) -> container::Style {
         text_color: Some(Color::from_rgb8(236, 234, 228)),
         border: border::rounded(0).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2389,6 +3694,7 @@ fn titlebar_icon_button(_: &Theme) -> container::Style {
         text_color: Some(Color::from_rgb8(236, 234, 228)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2402,6 +3708,7 @@ fn titlebar_menu_surface(theme: WorkspaceTheme) -> container::Style {
             offset: iced::Vector::new(0.0, 8.0),
             blur_radius: 18.0,
         },
+        snap: false,
     }
 }
 
@@ -2411,6 +3718,7 @@ fn titlebar_menu_item(_: WorkspaceTheme) -> container::Style {
         text_color: Some(Color::from_rgb8(232, 230, 222)),
         border: border::rounded(6).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2420,6 +3728,7 @@ fn titlebar_menu_item_hovered(theme: WorkspaceTheme) -> container::Style {
         text_color: Some(Color::from_rgb8(246, 244, 238)),
         border: border::rounded(6).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2435,6 +3744,7 @@ fn theme_swatch_style(theme: WorkspaceTheme, is_selected: bool) -> container::St
             })
             .width(if is_selected { 2 } else { 1 }),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2448,6 +3758,7 @@ fn record_button(theme: WorkspaceTheme) -> container::Style {
         text_color: Some(Color::from_rgb8(232, 242, 255)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2457,6 +3768,7 @@ fn record_button_hovered(theme: WorkspaceTheme) -> container::Style {
         text_color: Some(Color::from_rgb8(232, 242, 255)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2466,6 +3778,7 @@ fn stop_button(_: &Theme) -> container::Style {
         text_color: Some(Color::from_rgb8(255, 235, 235)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2475,6 +3788,7 @@ fn stop_button_hovered(_: &Theme) -> container::Style {
         text_color: Some(Color::from_rgb8(255, 235, 235)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2484,6 +3798,7 @@ fn side_button(_: &Theme) -> container::Style {
         text_color: Some(Color::from_rgb8(230, 228, 220)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2493,6 +3808,7 @@ fn side_button_hovered(_: &Theme) -> container::Style {
         text_color: Some(Color::from_rgb8(240, 238, 230)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2502,6 +3818,7 @@ fn pause_button_active(_: &Theme) -> container::Style {
         text_color: Some(Color::from_rgb8(255, 245, 210)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2511,6 +3828,7 @@ fn pause_button_active_hovered(_: &Theme) -> container::Style {
         text_color: Some(Color::from_rgb8(255, 245, 210)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2520,7 +3838,19 @@ fn pause_button_blink_off(_: &Theme) -> container::Style {
         text_color: Some(Color::from_rgb8(255, 245, 210)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
+}
+
+fn fade_container_style(mut style: container::Style, progress: f32) -> container::Style {
+    style.background = style.background.map(|background| match background {
+        Background::Color(color) => color.scale_alpha(progress).into(),
+        Background::Gradient(gradient) => gradient.scale_alpha(progress).into(),
+    });
+    style.text_color = style.text_color.map(|color| color.scale_alpha(progress));
+    style.border.color = style.border.color.scale_alpha(progress);
+    style.shadow.color = style.shadow.color.scale_alpha(progress);
+    style
 }
 
 fn switch_row(_: &Theme) -> container::Style {
@@ -2529,6 +3859,7 @@ fn switch_row(_: &Theme) -> container::Style {
         text_color: Some(Color::from_rgb8(232, 230, 222)),
         border: border::rounded(7).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2538,6 +3869,7 @@ fn switch_track(_: &Theme) -> container::Style {
         text_color: Some(Color::TRANSPARENT),
         border: border::rounded(11).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2547,6 +3879,7 @@ fn switch_track_hovered(_: &Theme) -> container::Style {
         text_color: Some(Color::TRANSPARENT),
         border: border::rounded(11).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2556,6 +3889,7 @@ fn switch_track_active(theme: WorkspaceTheme) -> container::Style {
         text_color: Some(Color::TRANSPARENT),
         border: border::rounded(11).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2565,6 +3899,7 @@ fn switch_track_active_hovered(theme: WorkspaceTheme) -> container::Style {
         text_color: Some(Color::TRANSPARENT),
         border: border::rounded(11).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2574,6 +3909,7 @@ fn switch_track_disabled(_: &Theme) -> container::Style {
         text_color: Some(Color::TRANSPARENT),
         border: border::rounded(11).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2583,6 +3919,7 @@ fn switch_knob(_: &Theme) -> container::Style {
         text_color: Some(Color::TRANSPARENT),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2592,6 +3929,7 @@ fn switch_knob_active(_: &Theme) -> container::Style {
         text_color: Some(Color::TRANSPARENT),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2601,6 +3939,7 @@ fn switch_knob_disabled(_: &Theme) -> container::Style {
         text_color: Some(Color::TRANSPARENT),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2610,6 +3949,7 @@ fn node_card(theme: WorkspaceTheme) -> container::Style {
         text_color: Some(Color::from_rgb8(232, 230, 222)),
         border: border::rounded(12).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2619,6 +3959,7 @@ fn selected_mode_card(theme: WorkspaceTheme) -> container::Style {
         text_color: Some(Color::from_rgb8(235, 242, 250)),
         border: border::rounded(12).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2628,6 +3969,7 @@ fn mode_card_disabled(_: &Theme) -> container::Style {
         text_color: Some(Color::from_rgb8(132, 130, 124)),
         border: border::rounded(12).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2637,6 +3979,7 @@ fn node_card_hovered(theme: WorkspaceTheme) -> container::Style {
         text_color: Some(Color::from_rgb8(244, 242, 235)),
         border: border::rounded(12).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2646,6 +3989,7 @@ fn node_card_disabled(_: &Theme) -> container::Style {
         text_color: Some(Color::from_rgb8(150, 148, 140)),
         border: border::rounded(12).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2655,6 +3999,7 @@ fn ghost_card(_: &Theme, theme: WorkspaceTheme) -> container::Style {
         text_color: Some(Color::from_rgb8(170, 168, 160)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -2664,7 +4009,333 @@ fn ghost_card_hovered(theme: WorkspaceTheme) -> container::Style {
         text_color: Some(Color::from_rgb8(232, 230, 222)),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
+}
+
+fn recording_empty_state(palette: component_styles::Palette) -> container::Style {
+    container::Style {
+        background: Some(palette.field.scale_alpha(0.45).into()),
+        text_color: Some(palette.text_muted),
+        border: border::rounded(8).width(0),
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+fn recording_thumbnail_style(palette: component_styles::Palette) -> container::Style {
+    container::Style {
+        background: Some(palette.field_disabled.into()),
+        text_color: Some(palette.text_muted),
+        border: border::rounded(6)
+            .color(Color::from_rgba(1.0, 1.0, 1.0, 0.1))
+            .width(1),
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+fn recording_item_style(
+    theme: WorkspaceTheme,
+    is_dragging: bool,
+    is_hovered: bool,
+) -> container::Style {
+    container::Style {
+        background: if is_dragging {
+            Some(theme.selected_surface().into())
+        } else if is_hovered {
+            Some(theme.surface().into())
+        } else {
+            None
+        },
+        text_color: Some(Color::from_rgb8(236, 234, 228)),
+        border: border::rounded(8).width(0),
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+fn recording_scrollable_style(_: &Theme, status: scrollable::Status) -> scrollable::Style {
+    let is_hovered_or_dragged = matches!(
+        status,
+        scrollable::Status::Hovered {
+            is_vertical_scrollbar_hovered: true,
+            ..
+        } | scrollable::Status::Dragged {
+            is_vertical_scrollbar_dragged: true,
+            ..
+        }
+    );
+    let thumb = if is_hovered_or_dragged {
+        Color::from_rgb8(156, 163, 175)
+    } else {
+        Color::from_rgb8(209, 213, 219)
+    };
+    let rail = scrollable::Rail {
+        background: None,
+        border: border::rounded(999).width(0),
+        scroller: scrollable::Scroller {
+            background: thumb.into(),
+            border: border::rounded(999).width(0),
+        },
+    };
+
+    scrollable::Style {
+        container: container::Style::default(),
+        vertical_rail: rail,
+        horizontal_rail: rail,
+        gap: None,
+        auto_scroll: scrollable::AutoScroll {
+            background: Color::from_rgba(0.0, 0.0, 0.0, 0.0).into(),
+            border: border::rounded(999).width(0),
+            shadow: Shadow::default(),
+            icon: thumb,
+        },
+    }
+}
+
+fn video_modal_dimensions(source_width: u32, source_height: u32) -> (f32, f32, f32) {
+    const MAX_VIDEO_WIDTH: f32 = 920.0;
+    const MAX_VIDEO_HEIGHT: f32 = 370.0;
+    const MIN_CONTROLS_WIDTH: f32 = 360.0;
+    const PANEL_HORIZONTAL_PADDING: f32 = 36.0;
+
+    let source_width = source_width.max(1) as f32;
+    let source_height = source_height.max(1) as f32;
+    let scale = (MAX_VIDEO_WIDTH / source_width)
+        .min(MAX_VIDEO_HEIGHT / source_height)
+        .min(1.0);
+    let video_width = (source_width * scale).max(1.0);
+    let video_height = (source_height * scale).max(1.0);
+    let panel_width = video_width.max(MIN_CONTROLS_WIDTH) + PANEL_HORIZONTAL_PADDING;
+
+    (video_width, video_height, panel_width)
+}
+
+fn video_surface_style(palette: component_styles::Palette) -> container::Style {
+    container::Style {
+        background: Some(
+            Color::from_rgb8(18, 18, 17)
+                .scale_alpha(palette.panel.a)
+                .into(),
+        ),
+        text_color: Some(palette.text),
+        border: border::rounded(7)
+            .color(Color::from_rgba(1.0, 1.0, 1.0, 0.1).scale_alpha(palette.panel.a))
+            .width(1),
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+fn recording_save_button_style(
+    status: button::Status,
+    accent: Color,
+    hover: Color,
+) -> button::Style {
+    let background = match status {
+        button::Status::Hovered | button::Status::Pressed => hover,
+        button::Status::Disabled => Color::from_rgb8(43, 43, 40).scale_alpha(accent.a),
+        button::Status::Active => accent,
+    };
+    let text_color = if matches!(status, button::Status::Disabled) {
+        Color::from_rgb8(126, 124, 118).scale_alpha(accent.a)
+    } else {
+        Color::from_rgb8(232, 242, 255).scale_alpha(accent.a)
+    };
+
+    button::Style {
+        background: Some(background.into()),
+        text_color,
+        border: border::rounded(7).width(0),
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+async fn scan_recordings(folder: PathBuf) -> Vec<RecordingItem> {
+    let mut recordings = fs::read_dir(folder)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && is_supported_video_file(path))
+        .filter_map(|path| {
+            let metadata = fs::metadata(&path).ok()?;
+            let file_name = file_name_string(&path)?;
+            let extension = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or("mp4")
+                .to_ascii_uppercase();
+            let title = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or(&file_name)
+                .to_string();
+
+            Some(RecordingItem {
+                duration: probe_video_duration(&path),
+                thumbnail_path: create_cached_video_thumbnail(&path),
+                modified: metadata.modified().unwrap_or(UNIX_EPOCH),
+                path,
+                file_name,
+                title,
+                extension,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    recordings.sort_by(|a, b| b.modified.cmp(&a.modified));
+    recordings
+}
+
+fn is_supported_video_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "mp4" | "mkv" | "webm"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn file_name_string(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|file_name| file_name.to_str())
+        .map(ToOwned::to_owned)
+}
+
+fn validate_recording_title(title: &str, extension: &str) -> Option<String> {
+    if title.is_empty() {
+        return Some("Recording title cannot be empty.".to_string());
+    }
+
+    if title.chars().count() > 140 {
+        return Some("Recording title must be 140 characters or fewer.".to_string());
+    }
+
+    if title == "."
+        || title == ".."
+        || title
+            .chars()
+            .any(|character| character == '/' || character == '\\' || character.is_control())
+    {
+        return Some("Recording title cannot contain path separators.".to_string());
+    }
+
+    let extension_suffix = format!(".{}", extension.to_ascii_lowercase());
+    if title.to_ascii_lowercase().ends_with(&extension_suffix) {
+        return Some(format!("Leave {extension_suffix} outside the title box."));
+    }
+
+    None
+}
+
+#[derive(Debug, Default)]
+struct VideoMetadata {
+    duration: Option<Duration>,
+    dimensions: Option<(u32, u32)>,
+}
+
+#[derive(serde::Deserialize)]
+struct FfprobeOutput {
+    streams: Vec<FfprobeStream>,
+    format: Option<FfprobeFormat>,
+}
+
+#[derive(serde::Deserialize)]
+struct FfprobeStream {
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+#[derive(serde::Deserialize)]
+struct FfprobeFormat {
+    duration: Option<String>,
+}
+
+fn probe_video_duration(video_path: &Path) -> Option<Duration> {
+    probe_video_metadata(video_path).duration
+}
+
+fn probe_video_metadata(video_path: &Path) -> VideoMetadata {
+    let output = Command::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("v:0")
+        .arg("-show_entries")
+        .arg("stream=width,height:format=duration")
+        .arg("-of")
+        .arg("json")
+        .arg(video_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+
+    let Ok(output) = output else {
+        return VideoMetadata::default();
+    };
+
+    if !output.status.success() {
+        return VideoMetadata::default();
+    }
+
+    let Ok(output) = serde_json::from_slice::<FfprobeOutput>(&output.stdout) else {
+        return VideoMetadata::default();
+    };
+
+    let duration = output
+        .format
+        .and_then(|format| format.duration)
+        .and_then(|duration| duration.parse::<f64>().ok())
+        .filter(|seconds| seconds.is_finite())
+        .map(|seconds| Duration::from_secs_f64(seconds.max(0.0)));
+    let dimensions = output.streams.into_iter().find_map(|stream| {
+        let width = stream.width?;
+        let height = stream.height?;
+
+        (width > 0 && height > 0).then_some((width, height))
+    });
+
+    VideoMetadata {
+        duration,
+        dimensions,
+    }
+}
+
+fn create_cached_video_thumbnail(video_path: &Path) -> Option<PathBuf> {
+    let thumbnail_dir = std::env::temp_dir().join("roton-recording-thumbnails");
+    fs::create_dir_all(&thumbnail_dir).ok()?;
+
+    let thumbnail_path = thumbnail_dir.join(format!("{}.png", thumbnail_cache_key(video_path)));
+
+    if thumbnail_path.exists() {
+        return Some(thumbnail_path);
+    }
+
+    create_video_thumbnail_at(video_path, &thumbnail_path).then_some(thumbnail_path)
+}
+
+fn thumbnail_cache_key(video_path: &Path) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    video_path.hash(&mut hasher);
+
+    if let Ok(metadata) = fs::metadata(video_path) {
+        metadata.len().hash(&mut hasher);
+        metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default()
+            .hash(&mut hasher);
+    }
+
+    hasher.finish()
 }
 
 fn notify_recording_completed(save_path: String, video_path: Option<PathBuf>) {
@@ -2703,23 +4374,36 @@ fn create_video_thumbnail(video_path: &Path) -> Option<PathBuf> {
         chrono::Local::now().format("%Y-%m-%d_%H-%M-%S-%f")
     ));
 
+    create_video_frame_at(video_path, &thumbnail_path, 1.0, 320).then_some(thumbnail_path)
+}
+
+fn create_video_thumbnail_at(video_path: &Path, thumbnail_path: &Path) -> bool {
+    create_video_frame_at(video_path, thumbnail_path, 1.0, 320)
+}
+
+fn create_video_frame_at(
+    video_path: &Path,
+    output_path: &Path,
+    position_seconds: f64,
+    width: u32,
+) -> bool {
     let status = Command::new("ffmpeg")
         .arg("-y")
         .arg("-ss")
-        .arg("00:00:01")
+        .arg(format!("{:.3}", position_seconds.max(0.0)))
         .arg("-i")
         .arg(video_path)
         .arg("-frames:v")
         .arg("1")
         .arg("-vf")
-        .arg("scale=320:-1")
-        .arg(&thumbnail_path)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .arg(format!("scale={width}:-1"))
+        .arg(output_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
-        .ok()?;
+        .ok();
 
-    status.success().then_some(thumbnail_path)
+    status.is_some_and(|status| status.success())
 }
 
 fn truncate_text(value: &str, max_chars: usize) -> String {
@@ -2739,6 +4423,46 @@ fn truncate_text(value: &str, max_chars: usize) -> String {
     }
 
     text
+}
+
+fn format_elapsed(duration: Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let hours = total_seconds / 3_600;
+    let minutes = (total_seconds / 60) % 60;
+    let seconds = total_seconds % 60;
+    let centiseconds = duration.subsec_millis() / 10;
+
+    if hours > 0 {
+        format!("{hours:02}:{minutes:02}:{seconds:02}.{centiseconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}.{centiseconds:02}")
+    }
+}
+
+fn format_duration(duration: Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let hours = total_seconds / 3_600;
+    let minutes = (total_seconds / 60) % 60;
+    let seconds = total_seconds % 60;
+
+    if hours > 0 {
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
+    }
+}
+
+fn scroll_delta_to_offset(delta: mouse::ScrollDelta) -> scrollable::AbsoluteOffset {
+    match delta {
+        mouse::ScrollDelta::Lines { x, y } => scrollable::AbsoluteOffset {
+            x: -x * 150.0,
+            y: -y * 150.0,
+        },
+        mouse::ScrollDelta::Pixels { x, y } => scrollable::AbsoluteOffset {
+            x: -x * 2.4,
+            y: -y * 2.4,
+        },
+    }
 }
 
 async fn pick_output_folder() -> Option<String> {
@@ -2818,4 +4542,22 @@ fn display_monitors() -> Vec<String> {
                 .collect()
         })
         .unwrap_or_else(|_| vec!["Primary display".to_string()])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_elapsed_under_an_hour() {
+        assert_eq!(format_elapsed(Duration::from_millis(62_345)), "01:02.34");
+    }
+
+    #[test]
+    fn formats_elapsed_at_an_hour() {
+        assert_eq!(
+            format_elapsed(Duration::from_millis(3_661_007)),
+            "01:01:01.00"
+        );
+    }
 }

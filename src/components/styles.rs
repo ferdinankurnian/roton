@@ -38,6 +38,25 @@ impl Palette {
             selection: Color::from_rgb8(47, 94, 158),
         }
     }
+
+    pub fn scale_alpha(self, factor: f32) -> Self {
+        Self {
+            panel: self.panel.scale_alpha(factor),
+            field: self.field.scale_alpha(factor),
+            field_hover: self.field_hover.scale_alpha(factor),
+            field_disabled: self.field_disabled.scale_alpha(factor),
+            menu: self.menu.scale_alpha(factor),
+            option_hover: self.option_hover.scale_alpha(factor),
+            option_selected: self.option_selected.scale_alpha(factor),
+            option_selected_hover: self.option_selected_hover.scale_alpha(factor),
+            separator: self.separator.scale_alpha(factor),
+            text: self.text.scale_alpha(factor),
+            text_strong: self.text_strong.scale_alpha(factor),
+            text_muted: self.text_muted.scale_alpha(factor),
+            text_disabled: self.text_disabled.scale_alpha(factor),
+            selection: self.selection.scale_alpha(factor),
+        }
+    }
 }
 
 impl Default for Palette {
@@ -56,6 +75,7 @@ pub fn dialog_panel_with_palette(progress: f32, palette: Palette) -> container::
             offset: iced::Vector::new(0.0, 10.0 * progress),
             blur_radius: 24.0 * progress,
         },
+        snap: false,
     }
 }
 
@@ -65,6 +85,7 @@ pub fn scrim(progress: f32) -> container::Style {
         text_color: Some(Color::TRANSPARENT),
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -74,6 +95,7 @@ pub fn input_surface_with_palette(palette: Palette) -> container::Style {
         text_color: Some(palette.text),
         border: border::rounded(7).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -100,6 +122,7 @@ pub fn dropdown_field_with_palette(status: button::Status, palette: Palette) -> 
         text_color,
         border: border::rounded(7).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -113,6 +136,7 @@ pub fn dropdown_menu_with_palette(palette: Palette) -> container::Style {
             offset: iced::Vector::new(0.0, 8.0),
             blur_radius: 18.0,
         },
+        snap: false,
     }
 }
 
@@ -130,6 +154,7 @@ pub fn dropdown_option_with_palette(status: button::Status, palette: Palette) ->
         text_color,
         border: border::rounded(5).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -150,6 +175,7 @@ pub fn dropdown_option_selected_with_palette(
         text_color,
         border: border::rounded(5).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -167,5 +193,6 @@ pub fn separator_with_palette(palette: Palette) -> container::Style {
         text_color: Some(Color::TRANSPARENT),
         border: border::rounded(1).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }

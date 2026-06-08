@@ -5,7 +5,7 @@ use iced::advanced::renderer;
 use iced::advanced::widget::{Operation, Tree};
 use iced::advanced::Renderer as _;
 use iced::advanced::{Clipboard, Overlay, Shell, Widget};
-use iced::event::{self, Event};
+use iced::event::Event;
 use iced::widget::{button, column, container, row, svg, text, Space};
 use iced::{
     alignment, Background, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector,
@@ -47,7 +47,7 @@ pub fn select<'a, Message: Clone + 'a>(
     let field = container(
         row![
             text(truncate_text(&selected, max_chars)).size(13),
-            Space::with_width(Length::Fill),
+            Space::new().width(Length::Fill),
             svg("assets/icons/chevrons-up-down.svg")
                 .width(15)
                 .height(15),
@@ -65,14 +65,14 @@ pub fn select<'a, Message: Clone + 'a>(
                 let marker: Element<_> = if is_selected {
                     svg("assets/icons/check.svg").width(15).height(15).into()
                 } else {
-                    Space::with_width(15).height(15).into()
+                    Space::new().width(15).height(15).into()
                 };
 
                 column.push(
                     button(
                         row![
                             text(option.label).size(13),
-                            Space::with_width(Length::Fill),
+                            Space::new().width(Length::Fill),
                             marker,
                         ]
                         .spacing(10)
@@ -91,7 +91,7 @@ pub fn select<'a, Message: Clone + 'a>(
                 )
             }
             Entry::Separator => column.push(
-                container(Space::with_height(1))
+                container(Space::new().height(1))
                     .width(Length::Fill)
                     .style(move |_| styles::separator_with_palette(palette)),
             ),
@@ -143,52 +143,50 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Dropdown<'_, Message> 
     }
 
     fn layout(
-        &self,
+        &mut self,
         tree: &mut Tree,
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
         self.field
-            .as_widget()
+            .as_widget_mut()
             .layout(&mut tree.children[0], renderer, limits)
     }
 
     fn operate(
-        &self,
+        &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
         self.field
-            .as_widget()
+            .as_widget_mut()
             .operate(&mut tree.children[0], layout, renderer, operation);
     }
 
-    fn on_event(
+    fn update(
         &mut self,
         tree: &mut Tree,
-        event: Event,
+        event: &Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         _renderer: &Renderer,
         _clipboard: &mut dyn Clipboard,
-        _shell: &mut Shell<'_, Message>,
+        shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
-    ) -> event::Status {
+    ) {
         let state = tree.state.downcast_mut::<State>();
 
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             | Event::Touch(iced::touch::Event::FingerPressed { .. }) => {
-                if self.disabled || !cursor.is_over(layout.bounds()) {
-                    event::Status::Ignored
-                } else {
+                if !self.disabled && cursor.is_over(layout.bounds()) {
                     state.is_open = !state.is_open;
-                    event::Status::Captured
+                    shell.capture_event();
                 }
             }
-            _ => event::Status::Ignored,
+            _ => {}
         }
     }
 
@@ -220,6 +218,7 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Dropdown<'_, Message> 
                 bounds: layout.bounds(),
                 border: style.border,
                 shadow: style.shadow,
+                snap: style.snap,
             },
             style
                 .background
@@ -257,8 +256,9 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Dropdown<'_, Message> 
     fn overlay<'b>(
         &'b mut self,
         tree: &'b mut Tree,
-        layout: Layout<'_>,
+        layout: Layout<'b>,
         _renderer: &Renderer,
+        _viewport: &Rectangle,
         translation: Vector,
     ) -> Option<iced::advanced::overlay::Element<'b, Message, Theme, Renderer>> {
         let state = tree.state.downcast_mut::<State>();
@@ -285,7 +285,7 @@ struct DropdownOverlay<'a, 'b, Message> {
 
 impl<Message: Clone> Overlay<Message, Theme, Renderer> for DropdownOverlay<'_, '_, Message> {
     fn layout(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
-        let menu = self.menu.as_widget().layout(
+        let menu = self.menu.as_widget_mut().layout(
             self.tree,
             renderer,
             &layout::Limits::new(Size::ZERO, Size::new(self.width, bounds.height))
@@ -318,19 +318,19 @@ impl<Message: Clone> Overlay<Message, Theme, Renderer> for DropdownOverlay<'_, '
 
     fn operate(&mut self, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
         self.menu
-            .as_widget()
+            .as_widget_mut()
             .operate(self.tree, layout, renderer, operation);
     }
 
-    fn on_event(
+    fn update(
         &mut self,
-        event: Event,
+        event: &Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
-    ) -> event::Status {
+    ) {
         let is_over = cursor.is_over(layout.bounds());
 
         if !is_over
@@ -341,12 +341,13 @@ impl<Message: Clone> Overlay<Message, Theme, Renderer> for DropdownOverlay<'_, '
             )
         {
             *self.is_open = false;
-            return event::Status::Captured;
+            shell.capture_event();
+            return;
         }
 
-        let status = self.menu.as_widget_mut().on_event(
+        self.menu.as_widget_mut().update(
             self.tree,
-            event.clone(),
+            event,
             layout,
             cursor,
             renderer,
@@ -355,7 +356,7 @@ impl<Message: Clone> Overlay<Message, Theme, Renderer> for DropdownOverlay<'_, '
             &layout.bounds(),
         );
 
-        if status == event::Status::Captured
+        if shell.is_event_captured()
             && matches!(
                 event,
                 Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
@@ -365,10 +366,8 @@ impl<Message: Clone> Overlay<Message, Theme, Renderer> for DropdownOverlay<'_, '
             *self.is_open = false;
         }
 
-        if status == event::Status::Captured || is_over {
-            event::Status::Captured
-        } else {
-            event::Status::Ignored
+        if is_over {
+            shell.capture_event();
         }
     }
 
@@ -376,15 +375,18 @@ impl<Message: Clone> Overlay<Message, Theme, Renderer> for DropdownOverlay<'_, '
         &self,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
         if cursor.is_over(layout.bounds()) {
             mouse::Interaction::Idle
         } else {
-            self.menu
-                .as_widget()
-                .mouse_interaction(self.tree, layout, cursor, viewport, renderer)
+            self.menu.as_widget().mouse_interaction(
+                self.tree,
+                layout,
+                cursor,
+                &layout.bounds(),
+                renderer,
+            )
         }
     }
 }

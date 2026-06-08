@@ -1,6 +1,6 @@
 use super::{overlay::default_cursor, styles};
 use iced::widget::{button, svg, text};
-use iced::{border, Color, Element, Length, Shadow};
+use iced::{border, Color, Element, Shadow};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Variant {
@@ -37,21 +37,6 @@ pub fn accent_text_button<'a, Message: Clone + 'a>(
     )
 }
 
-pub fn accent_fill_text_button<'a, Message: Clone + 'a>(
-    label: &'a str,
-    on_press: Option<Message>,
-    accent: Color,
-    hovered_accent: Color,
-) -> Element<'a, Message> {
-    default_cursor(
-        button(text(label).size(13))
-            .padding([10, 14])
-            .width(Length::Fill)
-            .style(move |_, status| primary_style(status, accent, hovered_accent))
-            .on_press_maybe(on_press),
-    )
-}
-
 pub fn themed_compact_icon_button<'a, Message: Clone + 'a>(
     icon: impl Into<svg::Handle>,
     variant: Variant,
@@ -69,15 +54,16 @@ pub fn themed_compact_icon_button<'a, Message: Clone + 'a>(
 }
 
 fn primary_style(status: button::Status, accent: Color, hovered_accent: Color) -> button::Style {
+    let alpha = accent.a;
     let background = match status {
         button::Status::Hovered | button::Status::Pressed => hovered_accent,
-        button::Status::Disabled => Color::from_rgb8(43, 43, 40),
+        button::Status::Disabled => Color::from_rgb8(43, 43, 40).scale_alpha(alpha),
         button::Status::Active => accent,
     };
     let text_color = if matches!(status, button::Status::Disabled) {
-        Color::from_rgb8(126, 124, 118)
+        Color::from_rgb8(126, 124, 118).scale_alpha(alpha)
     } else {
-        Color::from_rgb8(232, 242, 255)
+        Color::from_rgb8(232, 242, 255).scale_alpha(alpha)
     };
 
     button::Style {
@@ -85,6 +71,7 @@ fn primary_style(status: button::Status, accent: Color, hovered_accent: Color) -
         text_color,
         border: border::rounded(8).width(0),
         shadow: Shadow::default(),
+        snap: false,
     }
 }
 
@@ -101,9 +88,9 @@ fn style_with_palette(
             border::rounded(7).color(palette.separator).width(1),
         ),
         Variant::Danger => (
-            Color::from_rgb8(170, 43, 48),
-            Color::from_rgb8(142, 34, 40),
-            Color::from_rgb8(255, 235, 235),
+            Color::from_rgb8(170, 43, 48).scale_alpha(palette.panel.a),
+            Color::from_rgb8(142, 34, 40).scale_alpha(palette.panel.a),
+            Color::from_rgb8(255, 235, 235).scale_alpha(palette.panel.a),
             border::rounded(8).width(0),
         ),
         Variant::Side => (
@@ -120,18 +107,21 @@ fn style_with_palette(
             text_color,
             border,
             shadow: Shadow::default(),
+            snap: false,
         },
         button::Status::Disabled => button::Style {
             background: Some(palette.field_disabled.into()),
             text_color: palette.text_disabled,
             border,
             shadow: Shadow::default(),
+            snap: false,
         },
         button::Status::Active => button::Style {
             background: Some(background.into()),
             text_color,
             border,
             shadow: Shadow::default(),
+            snap: false,
         },
     }
 }
